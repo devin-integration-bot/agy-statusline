@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/mritd/agy-statusline/internal/ansi"
 )
 
 func TestEnvironmentModule(t *testing.T) {
@@ -43,20 +45,20 @@ func TestEnvironmentModule(t *testing.T) {
 		t.Fatalf("Collect error: %v", err)
 	}
 	vars := m.Vars(ctx)
-	if vars["agents_md"] != "2" {
-		t.Errorf("agents_md = %q, want 2", vars["agents_md"])
+	if vars["agents_md"] != ansi.Colored(ansi.Green, "2") {
+		t.Errorf("agents_md = %q, want colored 2", vars["agents_md"])
 	}
-	if vars["rules"] != "3" {
-		t.Errorf("rules = %q, want 3", vars["rules"])
+	if vars["rules"] != ansi.Colored(ansi.Green, "3") {
+		t.Errorf("rules = %q, want colored 3", vars["rules"])
 	}
-	if vars["skills"] != "2" {
-		t.Errorf("skills = %q, want 2", vars["skills"])
+	if vars["skills"] != ansi.Colored(ansi.Green, "2") {
+		t.Errorf("skills = %q, want colored 2", vars["skills"])
 	}
-	if vars["mcps"] != "1" {
-		t.Errorf("mcps = %q, want 1 (disabled server excluded)", vars["mcps"])
+	if vars["mcps"] != ansi.Colored(ansi.Green, "1") {
+		t.Errorf("mcps = %q, want colored 1 (disabled server excluded)", vars["mcps"])
 	}
-	if vars["hooks"] != "3" {
-		t.Errorf("hooks = %q, want 3", vars["hooks"])
+	if vars["hooks"] != ansi.Colored(ansi.Green, "3") {
+		t.Errorf("hooks = %q, want colored 3", vars["hooks"])
 	}
 }
 
@@ -76,11 +78,11 @@ func TestEnvironmentModule_GlobCharsAndEmptyHooks(t *testing.T) {
 	ctx := &Context{CWD: cwd}
 	_ = m.Collect(ctx)
 	vars := m.Vars(ctx)
-	if vars["rules"] != "1" {
-		t.Errorf("rules = %q, want 1 (ignoring .md dir and handling [variants])", vars["rules"])
+	if vars["rules"] != ansi.Colored(ansi.Green, "1") {
+		t.Errorf("rules = %q, want colored 1 (ignoring .md dir and handling [variants])", vars["rules"])
 	}
 	if vars["hooks"] != "0" {
-		t.Errorf("hooks = %q, want 0 for empty hooks object", vars["hooks"])
+		t.Errorf("hooks = %q, want plain 0 for empty hooks object", vars["hooks"])
 	}
 }
 

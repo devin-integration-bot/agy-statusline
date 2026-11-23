@@ -92,6 +92,7 @@ type Sandbox struct {
 type Subagent struct {
 	Name   string `json:"name"`
 	Role   string `json:"role"`
+	Model  string `json:"model"`
 	Status string `json:"status"`
 }
 

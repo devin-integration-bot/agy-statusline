@@ -22,6 +22,7 @@ func TestExecute_EndToEnd(t *testing.T) {
 
 	payload := `{
 		"cwd": "` + dir + `",
+		"conversation_id": "73f8c8da-819a-4dfa-9bd3-575c931cc932",
 		"transcript_path": "` + transcriptPath + `",
 		"model": {"display_name": "Gemini 4 Neon (High)"},
 		"context_window": {
@@ -38,8 +39,8 @@ func TestExecute_EndToEnd(t *testing.T) {
 
 	out := execute(strings.NewReader(payload), cfgPath)
 	lines := strings.Split(out, "\n")
-	if len(lines) < 3 {
-		t.Fatalf("expected at least 3 lines, got %d:\n%s", len(lines), out)
+	if len(lines) < 4 {
+		t.Fatalf("expected at least 4 lines, got %d:\n%s", len(lines), out)
 	}
 	if !strings.Contains(lines[0], "Ctx") || !strings.Contains(lines[0], "Usage") || !strings.Contains(lines[0], "Gemini 4 Neon (High)") || !strings.Contains(lines[0], "main") {
 		t.Errorf("line 0 unexpected: %q", lines[0])
@@ -53,11 +54,44 @@ func TestExecute_EndToEnd(t *testing.T) {
 	if !strings.Contains(lines[2], "Review all uncommitted changes...") {
 		t.Errorf("line 2 unexpected: %q", lines[2])
 	}
+	if !strings.HasSuffix(lines[3], " | 73f8c8da-819a-4dfa-9bd3-575c931cc932") {
+		t.Errorf("line 3 expected session UUID at end: %q", lines[3])
+	}
 }
 
 func TestExecute_InvalidJSON(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
 	if out := execute(strings.NewReader("{bad"), cfgPath); out != "" {
 		t.Errorf("expected empty output on malformed JSON, got %q", out)
+	}
+}
+
+func TestExecute_TranscriptPathFallbackFromAgyDir(t *testing.T) {
+	agyDir := t.TempDir()
+	t.Setenv("AGY_CONFIG_DIR", agyDir)
+
+	convID := "73f8c8da-819a-4dfa-9bd3-575c931cc932"
+	transcriptPath := filepath.Join(agyDir, "brain", convID, ".system_generated", "logs", "transcript.jsonl")
+	if err := os.MkdirAll(filepath.Dir(transcriptPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Join([]string{
+		`{"step_index":0,"type":"USER_INPUT","status":"DONE","created_at":"2026-11-22T04:00:00Z","content":"hi"}`,
+		`{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-22T04:00:01Z","tool_calls":[{"name":"read_file","args":{"Path":"\"main.go\""}}]}`,
+		`{"step_index":2,"type":"GENERIC","status":"DONE","created_at":"2026-11-22T04:00:02Z"}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(transcriptPath, []byte(lines), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	payload := `{
+		"conversation_id": "` + convID + `",
+		"transcript_path": "/nonexistent/.gemini/antigravity/brain/` + convID + `/.system_generated/logs/transcript.jsonl"
+	}`
+
+	out := execute(strings.NewReader(payload), cfgPath)
+	if !strings.Contains(out, "read_file ×1") {
+		t.Errorf("expected tools line via AGY_CONFIG_DIR fallback, got:\n%s", out)
 	}
 }

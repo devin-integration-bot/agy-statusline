@@ -11,7 +11,7 @@ func TestLoad_CreatesDefault(t *testing.T) {
 	path := filepath.Join(dir, "plugins", "agy-statusline", "config.json")
 
 	cfg := Load(path)
-	if len(cfg.Modules) != 7 {
+	if len(cfg.Modules) != 8 || cfg.Modules[len(cfg.Modules)-1] != "session" {
 		t.Fatalf("default modules = %v", cfg.Modules)
 	}
 	if cfg.BarStyle != "diamond" {

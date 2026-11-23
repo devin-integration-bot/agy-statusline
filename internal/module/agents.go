@@ -3,6 +3,7 @@ package module
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -36,19 +37,25 @@ func (m *AgentsModule) Collect(ctx *Context) error {
 func (m *AgentsModule) Vars(ctx *Context) map[string]string {
 	var runParts, compParts []string
 	runIcon := ctx.Config.Icon("running")
+	compIcon := ctx.Config.Icon("completed")
+	errIcon := ctx.Config.Icon("error")
 
 	if len(m.subagents) > 0 {
 		for _, sa := range m.subagents {
 			name := subagentDisplayName(sa)
 			switch strings.ToLower(sa.Status) {
 			case "running":
-				runParts = append(runParts, ansi.Colored(ansi.Cyan, runIcon+" "+name+"..."))
+				runParts = append(runParts, ansi.Colored(ansi.Cyan, appendEllipsis(runIcon+" "+name)))
 			case "error", "failed":
-				compParts = append(compParts, ansi.Colored(ansi.Red, runIcon+" "+name))
+				compParts = append(compParts, ansi.Colored(ansi.Red, errIcon+" "+name))
 			default:
-				compParts = append(compParts, runIcon+" "+name)
+				compParts = append(compParts, compIcon+" "+name)
 			}
 		}
+		// Antigravity CLI's stdin subagents slice has non-deterministic order
+		// across refreshes; sort stably so output does not jump between ticks.
+		slices.Sort(runParts)
+		slices.Sort(compParts)
 	} else {
 		for _, a := range m.agents {
 			name := agentDisplayName(a)
@@ -58,17 +65,17 @@ func (m *AgentsModule) Vars(ctx *Context) map[string]string {
 				if a.Model != "" && a.Model != "inherit" {
 					s += fmt.Sprintf(" [%s]", a.Model)
 				}
-				runParts = append(runParts, ansi.Colored(ansi.Cyan, s+"..."))
+				runParts = append(runParts, ansi.Colored(ansi.Cyan, appendEllipsis(s)))
 			case transcript.StatusCompleted:
-				compParts = append(compParts, formatCompletedAgent(runIcon, name, a))
+				compParts = append(compParts, formatCompletedAgent(compIcon, name, a))
 			case transcript.StatusError:
-				s := formatCompletedAgent(runIcon, name, a)
+				s := formatCompletedAgent(errIcon, name, a)
 				compParts = append(compParts, ansi.Colored(ansi.Red, s))
 			}
 		}
 	}
 
-	// When agents are running, hide completed; otherwise show only the latest.
+	// When agents are running, hide completed; otherwise keep only the latest.
 	if len(runParts) > 0 {
 		compParts = nil
 	} else if len(compParts) > 1 {
@@ -89,7 +96,7 @@ func (m *AgentsModule) Vars(ctx *Context) map[string]string {
 	}
 }
 
-func (m *AgentsModule) DefaultFormat() string { return "{summary}" }
+func (m *AgentsModule) DefaultFormat() string { return "{running}" }
 
 func formatCompletedAgent(icon, name string, a transcript.AgentEntry) string {
 	if !a.EndTime.IsZero() && !a.StartTime.IsZero() {
@@ -100,21 +107,21 @@ func formatCompletedAgent(icon, name string, a transcript.AgentEntry) string {
 }
 
 func subagentDisplayName(sa stdin.Subagent) string {
-	if sa.Role != "" {
-		return truncateRunes(sa.Role, 50)
+	if s := sanitizeSingleLine(sa.Role, 50); s != "" {
+		return s
 	}
-	if sa.Name != "" {
-		return truncateRunes(sa.Name, 50)
+	if s := sanitizeSingleLine(sa.Name, 50); s != "" {
+		return s
 	}
 	return "Agent"
 }
 
 func agentDisplayName(a transcript.AgentEntry) string {
-	if a.Description != "" {
-		return truncateRunes(a.Description, 50)
+	if s := sanitizeSingleLine(a.Description, 50); s != "" {
+		return s
 	}
-	if a.Type != "" {
-		return a.Type
+	if s := sanitizeSingleLine(a.Type, 50); s != "" {
+		return s
 	}
 	return "Agent"
 }
@@ -125,6 +132,13 @@ func truncateRunes(s string, maxLen int) string {
 		return s
 	}
 	return string(r[:maxLen]) + "..."
+}
+
+func appendEllipsis(s string) string {
+	if strings.HasSuffix(s, "...") {
+		return s
+	}
+	return s + "..."
 }
 
 func formatElapsed(d time.Duration) string {

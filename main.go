@@ -3,6 +3,8 @@ package main
 import (
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/mritd/agy-statusline/internal/config"
 	"github.com/mritd/agy-statusline/internal/module"
@@ -26,7 +28,7 @@ func execute(r io.Reader, cfgPath string) string {
 
 	ctx := &module.Context{
 		Stdin:          data,
-		TranscriptPath: data.TranscriptPath,
+		TranscriptPath: resolveTranscriptPath(data),
 		MaxTailBytes:   cfg.MaxTailBytes(),
 		Config:         cfg,
 		CWD:            data.EffectiveCWD(),
@@ -54,6 +56,33 @@ func execute(r io.Reader, cfgPath string) string {
 	registry.Register(module.NewAgentsModule())
 	registry.Register(module.NewProjectModule())
 	registry.Register(module.NewEnvironmentModule())
+	registry.Register(module.NewSessionModule())
 
 	return render.Render(ctx, registry, cfg)
+}
+
+// resolveTranscriptPath prefers the stdin transcript_path when it exists on disk,
+// falling back to $AGY_CONFIG_DIR/brain/<conversation_id>/.system_generated/logs/transcript.jsonl
+// when Antigravity CLI omits or passes a non-existent path (e.g. ~/.gemini/antigravity/brain/...).
+func resolveTranscriptPath(data *stdin.Data) string {
+	if data == nil {
+		return ""
+	}
+	if p := strings.TrimSpace(data.TranscriptPath); p != "" {
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+			return p
+		}
+	}
+
+	id := strings.TrimSpace(data.ConversationID)
+	if id == "" {
+		id = strings.TrimSpace(data.SessionID)
+	}
+	if id != "" && !strings.ContainsAny(id, `/\`) && id != "." && id != ".." {
+		candidate := filepath.Join(config.AgyDir(), "brain", id, ".system_generated", "logs", "transcript.jsonl")
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return data.TranscriptPath
 }

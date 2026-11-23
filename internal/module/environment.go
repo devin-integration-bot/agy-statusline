@@ -2,11 +2,12 @@ package module
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
+	"github.com/mritd/agy-statusline/internal/ansi"
 	"github.com/mritd/agy-statusline/internal/config"
 	"github.com/mritd/agy-statusline/internal/debug"
 )
@@ -103,12 +104,20 @@ func (m *EnvironmentModule) Collect(ctx *Context) error {
 
 func (m *EnvironmentModule) Vars(ctx *Context) map[string]string {
 	return map[string]string{
-		"agents_md": fmt.Sprintf("%d", m.agentsMD),
-		"rules":     fmt.Sprintf("%d", m.rules),
-		"skills":    fmt.Sprintf("%d", m.skills),
-		"mcps":      fmt.Sprintf("%d", m.mcps),
-		"hooks":     fmt.Sprintf("%d", m.hooks),
+		"agents_md": formatCount(m.agentsMD),
+		"rules":     formatCount(m.rules),
+		"skills":    formatCount(m.skills),
+		"mcps":      formatCount(m.mcps),
+		"hooks":     formatCount(m.hooks),
 	}
+}
+
+func formatCount(n int) string {
+	s := strconv.Itoa(n)
+	if n > 0 {
+		return ansi.Colored(ansi.Green, s)
+	}
+	return s
 }
 
 func (m *EnvironmentModule) DefaultFormat() string {

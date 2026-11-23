@@ -8,7 +8,7 @@ Single Go binary. Zero external dependencies. Concurrent data collection. Starts
 ● Ctx ◆◇◇◇◇◇◇◇◇◇ 14% | Usage ◆◇◇◇◇◇◇◇◇◇ 4% (2h 22m) | ◆◆◆◇◇◇◇◇◇◇ 31% (2d 14h) | Gemini 4 Neon (High) | main*
 ≡ read_file: ...config.go | ✓ run_command ×5 | ✓ edit_file ×3 | ✓ read_file ×12
 ≡ Review all uncommitted changes...
-2 AGENTS.md | 5 rules | 5 skills | 0 MCPs | 0 hooks
+2 AGENTS.md | 5 rules | 5 skills | 0 MCPs | 0 hooks | 73f8c8da-819a-4dfa-9bd3-575c931cc932
 ```
 
 ## Install
@@ -48,7 +48,7 @@ A default config is auto-generated on first run at `~/.gemini/antigravity-cli/pl
 
 ```json
 {
-  "modules": ["context", "usage", "model", "git", "tools", "agents", "environment"],
+  "modules": ["context", "usage", "model", "git", "tools", "agents", "environment", "session"],
   "separator": " | "
 }
 ```
@@ -58,8 +58,8 @@ A default config is auto-generated on first run at `~/.gemini/antigravity-cli/pl
 ```jsonc
 {
   // Enabled modules, rendered left-to-right in this order.
-  // Available: context, usage, model, git, tools, agents, project, environment
-  "modules": ["context", "usage", "model", "git", "tools", "agents", "environment"],
+  // Available: context, usage, model, git, tools, agents, project, environment, session
+  "modules": ["context", "usage", "model", "git", "tools", "agents", "environment", "session"],
 
   // Separator between modules on the same line.
   "separator": " | ",
@@ -119,9 +119,10 @@ A default config is auto-generated on first run at `~/.gemini/antigravity-cli/pl
     "format": "{summary}"
   },
 
-  // Subagent tracking. Variables: {running} {completed} {summary}
+  // Subagent tracking (hidden when none are running by default).
+  // Variables: {running} {completed} {summary}
   "agents": {
-    "format": "{summary}"
+    "format": "{running}"
   },
 
   // Model and project info (disabled by default).
@@ -133,6 +134,12 @@ A default config is auto-generated on first run at `~/.gemini/antigravity-cli/pl
   // Environment counts. Variables: {agents_md} {rules} {skills} {mcps} {hooks}
   "environment": {
     "format": "{agents_md} AGENTS.md | {rules} rules | {skills} skills | {mcps} MCPs | {hooks} hooks"
+  },
+
+  // Conversation title (/rename) or fallback UUID.
+  // Variables: {session} {title} {id} {short_id}
+  "session": {
+    "format": "{session}"
   }
 }
 ```
