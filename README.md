@@ -142,8 +142,8 @@ A default config is auto-generated on first run at `~/.gemini/antigravity-cli/pl
     "format": "{model}"
   },
 
-  // Output token speed (tokens/sec), tracked per session with transcript.jsonl fallback.
-  // Variables: {tps} {rate} {avg} {avg_rate} {tokens} {duration}
+  // Output token speed (tokens/sec), combining transcript step boundaries with live timing.
+  // Variables: {tps} {rate} {avg} {avg_rate} {decode} {decode_rate} {ttft} {tokens} {duration}
   "tps": {
     "format": "{tps}"
   },

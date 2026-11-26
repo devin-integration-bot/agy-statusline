@@ -36,12 +36,34 @@ type Data struct {
 	SessionToolCounts map[string]int // cumulative tool call counts across session
 
 	// Output throughput derived from PLANNER_RESPONSE -> GENERIC step pairs.
+	LastStepIndex     int
 	LastTPS           float64
 	AvgTPS            float64
 	LastOutputTokens  int
 	LastDuration      time.Duration
 	TotalOutputTokens int
 	TotalDuration     time.Duration
+	TPSSteps          []TPSStep
+
+	// Most recent completed text-only PLANNER_RESPONSE (no tool_calls), used by
+	// live TPS tracking to anchor final-reply start time without prior tool time.
+	LatestTextStep TextPlannerStep
+}
+
+// TPSStep records a finalized tool-calling PLANNER_RESPONSE measurement.
+type TPSStep struct {
+	StepIndex    int
+	OutputTokens int
+	Duration     time.Duration
+	Model        string
+}
+
+// TextPlannerStep describes a completed text-only PLANNER_RESPONSE step.
+type TextPlannerStep struct {
+	StepIndex    int
+	OutputTokens int
+	CreatedAt    time.Time
+	Model        string
 }
 
 type ToolEntry struct {
@@ -62,16 +84,22 @@ type pendingStep struct {
 }
 
 type plannerSample struct {
-	stepIndex    int
-	outputTokens int
-	createdAt    time.Time
-	active       bool
+	stepIndex      int
+	toolCount      int
+	outputTokens   int
+	createdAt      time.Time
+	model          string
+	seenSteps      map[int]bool
+	matchedCount   int
+	maxGenericAt   time.Time
+	maxGenericStep int
+	hasGeneric     bool
+	active         bool
 }
 
 var (
 	patUserInput       = []byte(`"USER_INPUT"`)
 	patPlannerResponse = []byte(`"PLANNER_RESPONSE"`)
-	patToolCalls       = []byte(`"tool_calls"`)
 	patGeneric         = []byte(`"GENERIC"`)
 )
 
@@ -106,6 +134,7 @@ func Parse(path string, maxTailBytes int64) (*Data, error) {
 	stepBound := make(map[int]pendingStep)
 	var lastPromptTS time.Time
 	var lastPlanner plannerSample
+	var activeModel string
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
@@ -117,10 +146,10 @@ func Parse(path string, maxTailBytes int64) (*Data, error) {
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		// Fast byte pre-filter to skip SYSTEM_MESSAGE, CHECKPOINT, and
-		// text-only PLANNER_RESPONSE lines without JSON unmarshaling.
+		// Fast byte pre-filter to skip SYSTEM_MESSAGE and CHECKPOINT lines
+		// without JSON unmarshaling.
 		isUser := bytes.Contains(line, patUserInput)
-		isPlanner := bytes.Contains(line, patPlannerResponse) && bytes.Contains(line, patToolCalls)
+		isPlanner := bytes.Contains(line, patPlannerResponse)
 		isGeneric := bytes.Contains(line, patGeneric)
 		if !isUser && !isPlanner && !isGeneric {
 			continue
@@ -133,24 +162,45 @@ func Parse(path string, maxTailBytes int64) (*Data, error) {
 
 		switch entry.Type {
 		case "USER_INPUT":
+			flushPlanner(data, &lastPlanner, false)
 			lastPromptTS = entry.CreatedAt
 			// Clear previous turn's tools and any unmatched pending FIFO steps
 			// so cancelled/aborted tool calls cannot misalign future GENERIC steps.
 			data.Tools = nil
 			pending = nil
 			clear(stepBound)
-			lastPlanner = plannerSample{}
 
 		case "PLANNER_RESPONSE":
+			flushPlanner(data, &lastPlanner, false)
+			// Isolate TPS history to the active model when a session switches models.
+			if entry.Model != "" {
+				if activeModel != "" && entry.Model != activeModel {
+					resetTranscriptTPS(data)
+				}
+				activeModel = entry.Model
+			}
+			if len(entry.ToolCalls) == 0 {
+				if entry.OutputTokens > 0 && !entry.CreatedAt.IsZero() && entry.Status != "RUNNING" {
+					data.LatestTextStep = TextPlannerStep{
+						StepIndex:    entry.StepIndex,
+						OutputTokens: entry.OutputTokens,
+						CreatedAt:    entry.CreatedAt,
+						Model:        entry.Model,
+					}
+				}
+				continue
+			}
+
 			if entry.OutputTokens > 0 && !entry.CreatedAt.IsZero() {
 				lastPlanner = plannerSample{
 					stepIndex:    entry.StepIndex,
+					toolCount:    len(entry.ToolCalls),
 					outputTokens: entry.OutputTokens,
 					createdAt:    entry.CreatedAt,
+					model:        entry.Model,
+					seenSteps:    make(map[int]bool, len(entry.ToolCalls)),
 					active:       true,
 				}
-			} else {
-				lastPlanner = plannerSample{}
 			}
 			for i, tc := range entry.ToolCalls {
 				if tc.Name == "" {
@@ -187,23 +237,44 @@ func Parse(path string, maxTailBytes int64) (*Data, error) {
 			}
 
 		case "GENERIC":
-			// Measure planner output throughput from the first immediately following
-			// GENERIC step, ignoring late status updates for earlier/async steps and
-			// consuming lastPlanner so parallel tool steps are not double-counted.
+			// Measure planner output throughput using the latest GENERIC creation
+			// time across all tool_calls emitted by lastPlanner. Antigravity streams
+			// each tool call as soon as it finishes, so using only step_index+1
+			// dramatically overestimates TPS on multi-tool responses.
 			if lastPlanner.active {
-				earlierStep := entry.StepIndex > 0 && lastPlanner.stepIndex > 0 && entry.StepIndex <= lastPlanner.stepIndex
-				if !earlierStep {
-					adjacent := entry.StepIndex == lastPlanner.stepIndex+1 || (lastPlanner.stepIndex == 0 && entry.StepIndex == 0)
-					if adjacent && !entry.CreatedAt.IsZero() {
-						if dt := entry.CreatedAt.Sub(lastPlanner.createdAt); dt >= minStepDuration && dt <= maxStepDuration {
-							data.LastOutputTokens = lastPlanner.outputTokens
-							data.LastDuration = dt
-							data.LastTPS = float64(lastPlanner.outputTokens) / dt.Seconds()
-							data.TotalOutputTokens += lastPlanner.outputTokens
-							data.TotalDuration += dt
+				switch {
+				case entry.StepIndex > 0 && lastPlanner.stepIndex > 0:
+					if entry.StepIndex <= lastPlanner.stepIndex {
+						// Ignore late status updates for earlier/async steps.
+					} else if entry.StepIndex <= lastPlanner.stepIndex+lastPlanner.toolCount {
+						if !lastPlanner.seenSteps[entry.StepIndex] {
+							lastPlanner.seenSteps[entry.StepIndex] = true
+							lastPlanner.matchedCount++
+							if !entry.CreatedAt.IsZero() && (!lastPlanner.hasGeneric || entry.CreatedAt.After(lastPlanner.maxGenericAt)) {
+								lastPlanner.maxGenericAt = entry.CreatedAt
+							}
+							lastPlanner.hasGeneric = true
+							if entry.StepIndex > lastPlanner.maxGenericStep {
+								lastPlanner.maxGenericStep = entry.StepIndex
+							}
+							if lastPlanner.matchedCount >= lastPlanner.toolCount {
+								flushPlanner(data, &lastPlanner, false)
+							}
+						}
+					} else {
+						flushPlanner(data, &lastPlanner, false)
+					}
+				case lastPlanner.stepIndex == 0 && entry.StepIndex == 0:
+					if lastPlanner.matchedCount < max(1, lastPlanner.toolCount) {
+						lastPlanner.matchedCount++
+						if !entry.CreatedAt.IsZero() && (!lastPlanner.hasGeneric || entry.CreatedAt.After(lastPlanner.maxGenericAt)) {
+							lastPlanner.maxGenericAt = entry.CreatedAt
+						}
+						lastPlanner.hasGeneric = true
+						if lastPlanner.matchedCount >= max(1, lastPlanner.toolCount) {
+							flushPlanner(data, &lastPlanner, false)
 						}
 					}
-					lastPlanner.active = false
 				}
 			}
 
@@ -237,6 +308,8 @@ func Parse(path string, maxTailBytes int64) (*Data, error) {
 			}
 		}
 	}
+
+	flushPlanner(data, &lastPlanner, true)
 
 	if err := scanner.Err(); err != nil {
 		debug.Log("transcript", "scan error: %v", err)
@@ -288,6 +361,49 @@ func Parse(path string, maxTailBytes int64) (*Data, error) {
 	}
 
 	return data, nil
+}
+
+func flushPlanner(data *Data, p *plannerSample, atEOF bool) {
+	if !p.active {
+		return
+	}
+	if !p.hasGeneric {
+		p.active = false
+		return
+	}
+	// At EOF, avoid prematurely finalizing a multi-tool planner whose final
+	// tool call has not yet been emitted.
+	if atEOF && p.toolCount > 1 && ((p.stepIndex > 0 && p.maxGenericStep < p.stepIndex+p.toolCount) || (p.stepIndex == 0 && p.matchedCount < p.toolCount)) {
+		p.active = false
+		return
+	}
+	if dt := p.maxGenericAt.Sub(p.createdAt); dt >= minStepDuration && dt <= maxStepDuration {
+		data.LastStepIndex = p.stepIndex
+		data.LastOutputTokens = p.outputTokens
+		data.LastDuration = dt
+		data.LastTPS = float64(p.outputTokens) / dt.Seconds()
+		data.TotalOutputTokens += p.outputTokens
+		data.TotalDuration += dt
+		data.TPSSteps = append(data.TPSSteps, TPSStep{
+			StepIndex:    p.stepIndex,
+			OutputTokens: p.outputTokens,
+			Duration:     dt,
+			Model:        p.model,
+		})
+	}
+	p.active = false
+}
+
+func resetTranscriptTPS(data *Data) {
+	data.LastStepIndex = 0
+	data.LastTPS = 0
+	data.AvgTPS = 0
+	data.LastOutputTokens = 0
+	data.LastDuration = 0
+	data.TotalOutputTokens = 0
+	data.TotalDuration = 0
+	data.TPSSteps = nil
+	data.LatestTextStep = TextPlannerStep{}
 }
 
 func stepStatus(status, errMsg string) Status {
@@ -372,6 +488,7 @@ type jsonEntry struct {
 	Status       string          `json:"status"`
 	Error        string          `json:"error"`
 	CreatedAt    time.Time       `json:"created_at"`
+	Model        string          `json:"model"`
 	OutputTokens int             `json:"output_tokens"`
 	ToolCalls    []toolCallEntry `json:"tool_calls"`
 }

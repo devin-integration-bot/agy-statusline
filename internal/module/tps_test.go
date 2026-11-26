@@ -407,3 +407,271 @@ func TestTPSModule_EdgeCases(t *testing.T) {
 		}
 	})
 }
+
+func TestTPSModule_HybridExcludesToolExecutionAndMeasuresFinalTextReply(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Date(2026, 11, 26, 8, 0, 0, 0, time.UTC)
+
+	run := func(offset time.Duration, state string, totalOut int, td *transcript.Data) map[string]string {
+		m := newTestTPSModule(dir, func() time.Time { return base.Add(offset) })
+		ctx := &Context{
+			Stdin: &stdin.Data{
+				ConversationID: "conv-hybrid-1",
+				AgentState:     state,
+				ContextWindow:  stdin.ContextWindow{TotalOutputTokens: totalOut},
+			},
+			Transcript: td,
+		}
+		if err := m.Collect(ctx); err != nil {
+			t.Fatalf("Collect error: %v", err)
+		}
+		return m.Vars(ctx)
+	}
+
+	// Turn starts at t=0; step 1 (tool call) finishes at t=10s (1000 tok / 10s = 100 tok/s).
+	// A slow tool then runs for 60s while agent_state stays "working".
+	tdStep1 := &transcript.Data{
+		LastStepIndex:     1,
+		LastTPS:           100.0,
+		AvgTPS:            100.0,
+		LastOutputTokens:  1000,
+		LastDuration:      10 * time.Second,
+		TotalOutputTokens: 1000,
+		TotalDuration:     10 * time.Second,
+	}
+	vars := run(10*time.Second, "working", 1000, tdStep1)
+	if vars == nil || vars["rate"] != "100.0" {
+		t.Fatalf("step 1 vars = %+v, want rate=100.0", vars)
+	}
+	// 50 seconds into slow tool execution, TPS must stay at 100.0 (not decay toward 16 tok/s!).
+	vars = run(60*time.Second, "working", 1000, tdStep1)
+	if vars == nil || vars["rate"] != "100.0" {
+		t.Fatalf("during slow tool execution vars = %+v, want rate=100.0", vars)
+	}
+
+	// Final text-only reply starts at t=70s (step 3, 1500 tok) and finishes at t=80s (150 tok/s).
+	// Even though WorkingStartMs was way back at t=10s, duration must be 10s (80s - 70s), NOT 70s!
+	tdFinalText := &transcript.Data{
+		LastStepIndex:     1,
+		LastTPS:           100.0,
+		AvgTPS:            100.0,
+		LastOutputTokens:  1000,
+		LastDuration:      10 * time.Second,
+		TotalOutputTokens: 1000,
+		TotalDuration:     10 * time.Second,
+		LatestTextStep: transcript.TextPlannerStep{
+			StepIndex:    3,
+			OutputTokens: 1500,
+			CreatedAt:    base.Add(70 * time.Second),
+		},
+	}
+	vars = run(80*time.Second, "idle", 2500, tdFinalText)
+	if vars == nil || vars["rate"] != "150.0" || vars["duration"] != "10.0s" || vars["avg_rate"] != "125.0" {
+		t.Fatalf("final text reply vars = %+v, want rate=150.0 duration=10.0s avg_rate=125.0", vars)
+	}
+
+	// Subsequent idle refreshes (30s later) must keep the frozen 150.0 tok/s without drifting.
+	vars = run(110*time.Second, "idle", 2500, tdFinalText)
+	if vars == nil || vars["rate"] != "150.0" || vars["avg_rate"] != "125.0" {
+		t.Fatalf("idle refresh vars = %+v, want frozen rate=150.0 avg_rate=125.0", vars)
+	}
+}
+
+func TestTPSModule_ColdStartIgnoresStaleTextStep(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Date(2026, 11, 26, 8, 0, 0, 0, time.UTC)
+
+	oldTD := &transcript.Data{
+		LastStepIndex:     1,
+		LastTPS:           95.0,
+		AvgTPS:            95.0,
+		LastOutputTokens:  950,
+		LastDuration:      10 * time.Second,
+		TotalOutputTokens: 950,
+		TotalDuration:     10 * time.Second,
+		LatestTextStep: transcript.TextPlannerStep{
+			StepIndex:    3,
+			OutputTokens: 1200,
+			CreatedAt:    base,
+		},
+	}
+
+	run := func(offset time.Duration, state string, td *transcript.Data) map[string]string {
+		m := newTestTPSModule(dir, func() time.Time { return base.Add(offset) })
+		ctx := &Context{
+			Stdin: &stdin.Data{
+				ConversationID: "conv-resumed",
+				AgentState:     state,
+			},
+			Transcript: td,
+		}
+		if err := m.Collect(ctx); err != nil {
+			t.Fatalf("Collect error: %v", err)
+		}
+		return m.Vars(ctx)
+	}
+
+	// Resuming a conversation 2 minutes after an old text reply must not fabricate
+	// nowMs - CreatedAt; it should fall back to the transcript tool-step rate.
+	if vars := run(2*time.Minute, "idle", oldTD); vars == nil || vars["rate"] != "95.0" {
+		t.Fatalf("cold-start resumed vars = %+v, want rate=95.0", vars)
+	}
+
+	// Starting a new turn (working ticks before new step appears in transcript) must
+	// still ignore the historical step 3 instead of measuring 122s -> 9.8 tok/s.
+	if vars := run(2*time.Minute+1*time.Second, "working", oldTD); vars == nil || vars["rate"] != "95.0" || vars["avg_rate"] != "95.0" {
+		t.Fatalf("working tick 1 after cold start vars = %+v, want rate=95.0 avg_rate=95.0", vars)
+	}
+	if vars := run(2*time.Minute+2*time.Second, "working", oldTD); vars == nil || vars["rate"] != "95.0" || vars["avg_rate"] != "95.0" {
+		t.Fatalf("working tick 2 after cold start vars = %+v, want rate=95.0 avg_rate=95.0", vars)
+	}
+
+	// Once a genuinely new text step (step 5) finishes, it should be measured accurately.
+	newTD := *oldTD
+	newTD.LatestTextStep = transcript.TextPlannerStep{
+		StepIndex:    5,
+		OutputTokens: 800,
+		CreatedAt:    base.Add(2*time.Minute + 2*time.Second),
+	}
+	if vars := run(2*time.Minute+10*time.Second, "idle", &newTD); vars == nil || vars["rate"] != "100.0" || vars["duration"] != "8.0s" {
+		t.Fatalf("new step 5 vars = %+v, want rate=100.0 duration=8.0s", vars)
+	}
+}
+
+func TestTPSModule_SubsecondCreatedAtAndPollDelayBound(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Date(2026, 11, 26, 8, 0, 10, 0, time.UTC)
+
+	// Poll arrives 1.5s after whole-second CreatedAt (>= 1000ms) -> must NOT shift startMs by 1.5s.
+	m1 := newTestTPSModule(dir, func() time.Time { return base.Add(1500 * time.Millisecond) })
+	_ = m1.Collect(&Context{
+		Stdin: &stdin.Data{ConversationID: "conv-subsec", AgentState: "working"},
+	})
+	m2 := newTestTPSModule(dir, func() time.Time { return base.Add(2000 * time.Millisecond) })
+	ctx2 := &Context{
+		Stdin: &stdin.Data{ConversationID: "conv-subsec", AgentState: "idle", ContextWindow: stdin.ContextWindow{TotalOutputTokens: 200}},
+		Transcript: &transcript.Data{
+			LatestTextStep: transcript.TextPlannerStep{
+				StepIndex:    1,
+				OutputTokens: 200,
+				CreatedAt:    base, // 10.000s -> dur = 2.0s -> 100.0 tok/s (not 0.5s -> 400 tok/s)
+			},
+		},
+	}
+	_ = m2.Collect(ctx2)
+	if vars := m2.Vars(ctx2); vars == nil || vars["rate"] != "100.0" || vars["duration"] != "2.0s" {
+		t.Fatalf("poll-delay vars = %+v, want rate=100.0 duration=2.0s", vars)
+	}
+}
+
+func TestTPSModule_ShortStepDoesNotOverwriteSubstantialTPSAndOLSDecode(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Date(2026, 11, 26, 8, 0, 0, 0, time.UTC)
+
+	// Synthetic session with true decode = 150 tok/s and TTFT = 6.0s:
+	// dur = 6s + tokens/150s.
+	td := &transcript.Data{
+		LastStepIndex:     9,
+		LastTPS:           45.0,
+		LastOutputTokens:  450,
+		LastDuration:      10 * time.Second,
+		TotalOutputTokens: 16200,
+		TotalDuration:     138 * time.Second,
+		TPSSteps: []transcript.TPSStep{
+			{StepIndex: 1, OutputTokens: 300, Duration: 8 * time.Second},   // 6 + 2
+			{StepIndex: 3, OutputTokens: 1500, Duration: 16 * time.Second}, // 6 + 10
+			{StepIndex: 5, OutputTokens: 4500, Duration: 36 * time.Second}, // 6 + 30
+			{StepIndex: 7, OutputTokens: 9000, Duration: 66 * time.Second}, // 6 + 60 -> 136.4 tok/s (latest >= 1k)
+			{StepIndex: 9, OutputTokens: 900, Duration: 12 * time.Second},  // 6 + 6  -> 75.0 tok/s (< 1k, must not overwrite)
+		},
+	}
+
+	// Start working, then finish a tiny 150-token text reply in 10s (15.0 tok/s).
+	m1 := newTestTPSModule(dir, func() time.Time { return base.Add(100 * time.Second) })
+	_ = m1.Collect(&Context{
+		Stdin:      &stdin.Data{ConversationID: "conv-ols", AgentState: "working", Model: &stdin.Model{DisplayName: "Model A"}},
+		Transcript: td,
+	})
+
+	tdWithShortText := *td
+	tdWithShortText.LatestTextStep = transcript.TextPlannerStep{
+		StepIndex:    11,
+		OutputTokens: 150,
+		CreatedAt:    base.Add(100 * time.Second),
+	}
+	m2 := newTestTPSModule(dir, func() time.Time { return base.Add(107 * time.Second) }) // 6 + 1 = 7s
+	ctx2 := &Context{
+		Stdin:      &stdin.Data{ConversationID: "conv-ols", AgentState: "idle", Model: &stdin.Model{DisplayName: "Model A"}},
+		Transcript: &tdWithShortText,
+	}
+	_ = m2.Collect(ctx2)
+	vars := m2.Vars(ctx2)
+	if vars == nil {
+		t.Fatal("expected vars")
+	}
+	// Primary {tps} must stay on latest substantial step (step 7: 9000/66s = 136.4 tok/s),
+	// NOT drop to step 11 (150/7s = 21.4 tok/s)!
+	if vars["rate"] != "136.4" || vars["tokens"] != "9.0k" {
+		t.Errorf("primary rate/tokens = (%q, %q), want (136.4, 9.0k)", vars["rate"], vars["tokens"])
+	}
+	// OLS decode should recover ~150.0 tok/s and TTFT ~6.0s.
+	if vars["decode_rate"] != "150.0" || vars["ttft"] != "6.0s" {
+		t.Errorf("OLS decode/ttft = (%q, %q), want (150.0, 6.0s)", vars["decode_rate"], vars["ttft"])
+	}
+	if vars["decode"] != ansi.Colored(ansi.Cyan, "150.0 tok/s") {
+		t.Errorf("decode = %q", vars["decode"])
+	}
+
+	// Switching models resets live state cleanly so new model starts fresh.
+	tdModelB := &transcript.Data{
+		LastStepIndex:     13,
+		LastTPS:           200.0,
+		LastOutputTokens:  400,
+		LastDuration:      2 * time.Second,
+		TotalOutputTokens: 400,
+		TotalDuration:     2 * time.Second,
+		TPSSteps:          []transcript.TPSStep{{StepIndex: 13, OutputTokens: 400, Duration: 2 * time.Second, Model: "model-b"}},
+	}
+	m3 := newTestTPSModule(dir, func() time.Time { return base.Add(120 * time.Second) })
+	ctx3 := &Context{
+		Stdin:      &stdin.Data{ConversationID: "conv-ols", AgentState: "idle", Model: &stdin.Model{DisplayName: "Model B"}},
+		Transcript: tdModelB,
+	}
+	_ = m3.Collect(ctx3)
+	vars3 := m3.Vars(ctx3)
+	if vars3 == nil || vars3["rate"] != "200.0" || vars3["decode_rate"] != "" || vars3["ttft"] != "" {
+		t.Errorf("after model switch vars = %+v, want rate=200.0 and empty decode/ttft", vars3)
+	}
+}
+
+func TestEstimateDecodeAndTTFT_Guardrails(t *testing.T) {
+	// Too few samples -> rejected.
+	if _, _, ok := estimateDecodeAndTTFT([]tpsStepRecord{
+		{Tokens: 500, DurMs: 5000},
+		{Tokens: 3000, DurMs: 25000},
+	}); ok {
+		t.Errorf("expected rejection with < 5 samples")
+	}
+
+	// Narrow token spread -> rejected.
+	if _, _, ok := estimateDecodeAndTTFT([]tpsStepRecord{
+		{Tokens: 1000, DurMs: 10000},
+		{Tokens: 1100, DurMs: 11000},
+		{Tokens: 1200, DurMs: 12000},
+		{Tokens: 1300, DurMs: 13000},
+		{Tokens: 1400, DurMs: 14000},
+	}); ok {
+		t.Errorf("expected rejection with narrow token spread")
+	}
+
+	// Uncorrelated noisy timings (low R^2) -> rejected.
+	if _, _, ok := estimateDecodeAndTTFT([]tpsStepRecord{
+		{Tokens: 200, DurMs: 30000},
+		{Tokens: 1000, DurMs: 5000},
+		{Tokens: 2500, DurMs: 40000},
+		{Tokens: 5000, DurMs: 12000},
+		{Tokens: 8000, DurMs: 18000},
+	}); ok {
+		t.Errorf("expected rejection on low R^2 noisy data")
+	}
+}
