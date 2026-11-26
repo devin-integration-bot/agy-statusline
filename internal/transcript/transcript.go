@@ -14,7 +14,11 @@ import (
 	"github.com/mritd/agy-statusline/internal/debug"
 )
 
-const maxSessionTools = 6
+const (
+	maxSessionTools = 6
+	minStepDuration = 100 * time.Millisecond
+	maxStepDuration = 10 * time.Minute
+)
 
 // Status is the lifecycle state of a tool or agent call.
 type Status string
@@ -30,6 +34,14 @@ type Data struct {
 	Agents            []AgentEntry
 	SessionToolNames  []string       // up to 6 most recently used tool names across session
 	SessionToolCounts map[string]int // cumulative tool call counts across session
+
+	// Output throughput derived from PLANNER_RESPONSE -> GENERIC step pairs.
+	LastTPS           float64
+	AvgTPS            float64
+	LastOutputTokens  int
+	LastDuration      time.Duration
+	TotalOutputTokens int
+	TotalDuration     time.Duration
 }
 
 type ToolEntry struct {
@@ -47,6 +59,13 @@ type AgentEntry struct {
 type pendingStep struct {
 	isAgent bool
 	idx     int
+}
+
+type plannerSample struct {
+	stepIndex    int
+	outputTokens int
+	createdAt    time.Time
+	active       bool
 }
 
 var (
@@ -86,6 +105,7 @@ func Parse(path string, maxTailBytes int64) (*Data, error) {
 	var pending []pendingStep
 	stepBound := make(map[int]pendingStep)
 	var lastPromptTS time.Time
+	var lastPlanner plannerSample
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
@@ -119,8 +139,19 @@ func Parse(path string, maxTailBytes int64) (*Data, error) {
 			data.Tools = nil
 			pending = nil
 			clear(stepBound)
+			lastPlanner = plannerSample{}
 
 		case "PLANNER_RESPONSE":
+			if entry.OutputTokens > 0 && !entry.CreatedAt.IsZero() {
+				lastPlanner = plannerSample{
+					stepIndex:    entry.StepIndex,
+					outputTokens: entry.OutputTokens,
+					createdAt:    entry.CreatedAt,
+					active:       true,
+				}
+			} else {
+				lastPlanner = plannerSample{}
+			}
 			for i, tc := range entry.ToolCalls {
 				if tc.Name == "" {
 					continue
@@ -156,6 +187,26 @@ func Parse(path string, maxTailBytes int64) (*Data, error) {
 			}
 
 		case "GENERIC":
+			// Measure planner output throughput from the first immediately following
+			// GENERIC step, ignoring late status updates for earlier/async steps and
+			// consuming lastPlanner so parallel tool steps are not double-counted.
+			if lastPlanner.active {
+				earlierStep := entry.StepIndex > 0 && lastPlanner.stepIndex > 0 && entry.StepIndex <= lastPlanner.stepIndex
+				if !earlierStep {
+					adjacent := entry.StepIndex == lastPlanner.stepIndex+1 || (lastPlanner.stepIndex == 0 && entry.StepIndex == 0)
+					if adjacent && !entry.CreatedAt.IsZero() {
+						if dt := entry.CreatedAt.Sub(lastPlanner.createdAt); dt >= minStepDuration && dt <= maxStepDuration {
+							data.LastOutputTokens = lastPlanner.outputTokens
+							data.LastDuration = dt
+							data.LastTPS = float64(lastPlanner.outputTokens) / dt.Seconds()
+							data.TotalOutputTokens += lastPlanner.outputTokens
+							data.TotalDuration += dt
+						}
+					}
+					lastPlanner.active = false
+				}
+			}
+
 			// Reuse binding if the same step_index receives multiple status updates
 			// (e.g., RUNNING followed by DONE/ERROR); otherwise bind the next pending step.
 			step, ok := stepBound[entry.StepIndex]
@@ -232,6 +283,9 @@ func Parse(path string, maxTailBytes int64) (*Data, error) {
 		data.SessionToolNames = data.SessionToolNames[:maxSessionTools]
 	}
 	data.SessionToolCounts = sessionToolCounts
+	if data.TotalDuration > 0 && data.TotalOutputTokens > 0 {
+		data.AvgTPS = float64(data.TotalOutputTokens) / data.TotalDuration.Seconds()
+	}
 
 	return data, nil
 }
@@ -313,12 +367,13 @@ func truncatePath(p string, maxLen int) string {
 }
 
 type jsonEntry struct {
-	StepIndex int             `json:"step_index"`
-	Type      string          `json:"type"`
-	Status    string          `json:"status"`
-	Error     string          `json:"error"`
-	CreatedAt time.Time       `json:"created_at"`
-	ToolCalls []toolCallEntry `json:"tool_calls"`
+	StepIndex    int             `json:"step_index"`
+	Type         string          `json:"type"`
+	Status       string          `json:"status"`
+	Error        string          `json:"error"`
+	CreatedAt    time.Time       `json:"created_at"`
+	OutputTokens int             `json:"output_tokens"`
+	ToolCalls    []toolCallEntry `json:"tool_calls"`
 }
 
 type toolCallEntry struct {

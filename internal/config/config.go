@@ -59,7 +59,7 @@ const DefaultMaxTailSize = "2MB"
 
 func Default() *Config {
 	return &Config{
-		Modules:     []string{"context", "usage", "model", "git", "tools", "agents", "environment", "session"},
+		Modules:     []string{"context", "usage", "model", "tps", "git", "tools", "agents", "environment", "session"},
 		Separator:   " | ",
 		Newline:     []string{"tools", "agents", "environment"},
 		BarStyle:    "diamond",

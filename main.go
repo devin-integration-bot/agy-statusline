@@ -51,6 +51,7 @@ func execute(r io.Reader, cfgPath string) string {
 	registry.Register(module.NewUsageModule(uc.BarWidth, quotaBar))
 
 	registry.Register(module.NewModelModule())
+	registry.Register(module.NewTPSModule())
 	registry.Register(module.NewGitModule())
 	registry.Register(module.NewToolsModule())
 	registry.Register(module.NewAgentsModule())

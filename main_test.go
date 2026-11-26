@@ -8,13 +8,14 @@ import (
 )
 
 func TestExecute_EndToEnd(t *testing.T) {
+	t.Setenv("AGY_CONFIG_DIR", t.TempDir())
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
 	transcriptPath := filepath.Join(dir, "transcript.jsonl")
 	transcriptContent := strings.Join([]string{
 		`{"step_index":0,"type":"USER_INPUT","status":"DONE","created_at":"2026-11-22T04:00:00Z","content":"hello"}`,
-		`{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-22T04:00:01Z","tool_calls":[{"name":"read_file","args":{"Path":"\"main.go\""}}]}`,
-		`{"step_index":2,"type":"GENERIC","status":"DONE","created_at":"2026-11-22T04:00:02Z"}`,
+		`{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-22T04:00:01Z","output_tokens":425,"tool_calls":[{"name":"read_file","args":{"Path":"\"main.go\""}}]}`,
+		`{"step_index":2,"type":"GENERIC","status":"DONE","created_at":"2026-11-22T04:00:06Z"}`,
 	}, "\n") + "\n"
 	if err := os.WriteFile(transcriptPath, []byte(transcriptContent), 0o600); err != nil {
 		t.Fatal(err)
@@ -42,11 +43,13 @@ func TestExecute_EndToEnd(t *testing.T) {
 	if len(lines) < 4 {
 		t.Fatalf("expected at least 4 lines, got %d:\n%s", len(lines), out)
 	}
-	if !strings.Contains(lines[0], "Ctx") || !strings.Contains(lines[0], "Usage") || !strings.Contains(lines[0], "Gemini 4 Neon (High)") || !strings.Contains(lines[0], "main") {
+	if !strings.Contains(lines[0], "Ctx") || !strings.Contains(lines[0], "Usage") || !strings.Contains(lines[0], "Gemini 4 Neon (High)") || !strings.Contains(lines[0], "85.0 tok/s") || !strings.Contains(lines[0], "main") {
 		t.Errorf("line 0 unexpected: %q", lines[0])
 	}
-	if strings.Index(lines[0], "Usage") > strings.Index(lines[0], "Gemini 4 Neon (High)") || strings.Index(lines[0], "Gemini 4 Neon (High)") > strings.Index(lines[0], "main") {
-		t.Errorf("expected model between usage and git in line 0: %q", lines[0])
+	if strings.Index(lines[0], "Usage") > strings.Index(lines[0], "Gemini 4 Neon (High)") ||
+		strings.Index(lines[0], "Gemini 4 Neon (High)") > strings.Index(lines[0], "85.0 tok/s") ||
+		strings.Index(lines[0], "85.0 tok/s") > strings.Index(lines[0], "main") {
+		t.Errorf("expected order usage -> model -> tps -> git in line 0: %q", lines[0])
 	}
 	if !strings.Contains(lines[1], "read_file ×1") {
 		t.Errorf("line 1 unexpected: %q", lines[1])

@@ -1,10 +1,12 @@
 package transcript
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParse_AntigravityTranscript(t *testing.T) {
@@ -139,5 +141,78 @@ func TestUnquoteArg(t *testing.T) {
 				t.Errorf("unquoteArg(%s) = %q, want %q", tt.raw, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestParse_TPSExtraction(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "transcript.jsonl")
+	lines := []string{
+		`{"step_index":0,"type":"USER_INPUT","status":"DONE","created_at":"2026-11-26T00:00:00Z","content":"hi"}`,
+		// Step 1: 400 tokens in 4s -> 100.0 tok/s, followed by 2 parallel GENERIC steps (second must not double-count).
+		`{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-26T00:00:00Z","output_tokens":400,"tool_calls":[{"name":"read_file","args":{"Path":"\"a.go\""}},{"name":"read_file","args":{"Path":"\"b.go\""}}]}`,
+		`{"step_index":2,"type":"GENERIC","status":"RUNNING","created_at":"2026-11-26T00:00:04Z"}`,
+		`{"step_index":2,"type":"GENERIC","status":"DONE","created_at":"2026-11-26T00:00:06Z"}`,
+		`{"step_index":3,"type":"GENERIC","status":"DONE","created_at":"2026-11-26T00:00:07Z"}`,
+		// Cancelled planner step followed by USER_INPUT must not pair with next turn's GENERIC.
+		`{"step_index":4,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-26T00:00:10Z","output_tokens":999,"tool_calls":[{"name":"run_command","args":{"CommandLine":"\"sleep 99\""}}]}`,
+		`{"step_index":5,"type":"USER_INPUT","status":"DONE","created_at":"2026-11-26T00:02:00Z","content":"next"}`,
+		// Step 6: 600 tokens in 6s -> 100.0 tok/s; total = 1000 tokens / 10s = 100.0 tok/s.
+		`{"step_index":6,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-26T00:02:00Z","output_tokens":600,"tool_calls":[{"name":"edit_file","args":{"Path":"\"a.go\""}}]}`,
+		`{"step_index":7,"type":"GENERIC","status":"DONE","created_at":"2026-11-26T00:02:06Z"}`,
+	}
+	if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := Parse(p, 0)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	if data.LastOutputTokens != 600 || data.LastDuration != 6*time.Second {
+		t.Errorf("last step = (%d tok, %v), want (600, 6s)", data.LastOutputTokens, data.LastDuration)
+	}
+	if math.Abs(data.LastTPS-100.0) > 1e-6 {
+		t.Errorf("LastTPS = %v, want 100.0", data.LastTPS)
+	}
+	if data.TotalOutputTokens != 1000 || data.TotalDuration != 10*time.Second {
+		t.Errorf("totals = (%d tok, %v), want (1000, 10s)", data.TotalOutputTokens, data.TotalDuration)
+	}
+	if math.Abs(data.AvgTPS-100.0) > 1e-6 {
+		t.Errorf("AvgTPS = %v, want 100.0", data.AvgTPS)
+	}
+}
+
+func TestParse_TPSOutOfOrderGenericAndMinDuration(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "transcript.jsonl")
+	lines := []string{
+		`{"step_index":0,"type":"USER_INPUT","status":"DONE","created_at":"2026-11-26T00:00:00Z","content":"hi"}`,
+		// Step 1 starts an async tool (step 2).
+		`{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-26T00:00:00Z","output_tokens":200,"tool_calls":[{"name":"run_command","args":{"CommandLine":"\"long\""}}]}`,
+		`{"step_index":2,"type":"GENERIC","status":"RUNNING","created_at":"2026-11-26T00:00:02Z"}`,
+		// Step 3 emits a new planner response; step 2 finishes late BEFORE step 4 arrives.
+		`{"step_index":3,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-26T00:00:05Z","output_tokens":500,"tool_calls":[{"name":"read_file","args":{"Path":"\"a.go\""}}]}`,
+		`{"step_index":2,"type":"GENERIC","status":"DONE","created_at":"2026-11-26T00:00:06Z"}`,
+		`{"step_index":4,"type":"GENERIC","status":"DONE","created_at":"2026-11-26T00:00:10Z"}`,
+		// Step 5 has a sub-100ms delta to step 6 -> must be ignored.
+		`{"step_index":5,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-26T00:00:11.000Z","output_tokens":900,"tool_calls":[{"name":"read_file","args":{"Path":"\"b.go\""}}]}`,
+		`{"step_index":6,"type":"GENERIC","status":"DONE","created_at":"2026-11-26T00:00:11.050Z"}`,
+	}
+	if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := Parse(p, 0)
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	// Step 3 (500 tok / 5s = 100 tok/s) must be preserved; step 5 (50ms) must be ignored.
+	if data.LastOutputTokens != 500 || data.LastDuration != 5*time.Second {
+		t.Errorf("last step = (%d tok, %v), want (500, 5s)", data.LastOutputTokens, data.LastDuration)
+	}
+	if math.Abs(data.LastTPS-100.0) > 1e-6 {
+		t.Errorf("LastTPS = %v, want 100.0", data.LastTPS)
+	}
+	if data.TotalOutputTokens != 700 || data.TotalDuration != 7*time.Second {
+		t.Errorf("totals = (%d tok, %v), want (700, 7s)", data.TotalOutputTokens, data.TotalDuration)
 	}
 }
