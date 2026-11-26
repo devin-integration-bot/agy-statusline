@@ -1,16 +1,22 @@
 package ansi
 
 const (
-	Reset         = "\x1b[0m"
-	Red           = "\x1b[31m"
-	Green         = "\x1b[32m"
-	BoldGreen     = "\x1b[1;32m"
-	Yellow        = "\x1b[33m"
-	Magenta       = "\x1b[35m"
-	Cyan          = "\x1b[36m"
-	BrightBlue    = "\x1b[94m"
-	BrightMagenta = "\x1b[95m"
-	Dim           = "\x1b[2m"
+	Reset             = "\x1b[0m"
+	Red               = "\x1b[31m"
+	Green             = "\x1b[32m"
+	BoldGreen         = "\x1b[1;32m"
+	Yellow            = "\x1b[33m"
+	Magenta           = "\x1b[35m"
+	Cyan              = "\x1b[36m"
+	White             = "\x1b[37m"
+	BoldWhite         = "\x1b[1;37m"
+	BoldBrightGreen   = "\x1b[1;92m"
+	BoldBrightYellow  = "\x1b[1;93m"
+	BrightBlue        = "\x1b[94m"
+	BrightMagenta     = "\x1b[95m"
+	BoldBrightMagenta = "\x1b[1;95m"
+	BoldBrightCyan    = "\x1b[1;96m"
+	Dim               = "\x1b[2m"
 )
 
 func Colored(color, text string) string {

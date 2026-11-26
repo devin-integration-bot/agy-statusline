@@ -98,3 +98,85 @@ func TestExecute_TranscriptPathFallbackFromAgyDir(t *testing.T) {
 		t.Errorf("expected tools line via AGY_CONFIG_DIR fallback, got:\n%s", out)
 	}
 }
+
+func TestExecute_OfficialModulesDisabledByDefaultAndOptIn(t *testing.T) {
+	t.Setenv("AGY_CONFIG_DIR", t.TempDir())
+	payload := `{
+		"agent_state": "working",
+		"model": {"display_name": "Gemini 4 Neon"},
+		"context_window": {"context_window_size": 1000000, "used_percentage": 14.2},
+		"vcs": {"branch": "main", "dirty": true},
+		"sandbox": {"enabled": true},
+		"artifact_count": 3,
+		"task_count": 2,
+		"subagents": [{"name": "research", "role": "Search", "status": "completed"}],
+		"terminal_width": 100
+	}`
+
+	// Default config should NOT output the new opt-in modules.
+	defaultCfg := filepath.Join(t.TempDir(), "default.json")
+	defaultOut := execute(strings.NewReader(payload), defaultCfg)
+	for _, forbidden := range []string{"WORKING", "sandbox", "artifacts", "subagents", "tasks"} {
+		if strings.Contains(defaultOut, forbidden) {
+			t.Errorf("default output should not contain %q, got:\n%s", forbidden, defaultOut)
+		}
+	}
+
+	// Explicit opt-in config with fine bar, exact percent, count agents, and responsive layout.
+	optInCfg := filepath.Join(t.TempDir(), "optin.json")
+	cfgJSON := `{
+		"bar_style": "fine",
+		"context": {"format": "ctx {bar} {percent_exact}", "bar_width": 15, "context_limit": 0},
+		"agents": {"format": "subagents {count}"},
+		"responsive": [
+			{
+				"min_width": 120,
+				"modules": ["state", "model", "git", "context", "artifacts", "agents", "tasks", "sandbox"],
+				"newline": [],
+				"separator": " · "
+			},
+			{
+				"min_width": 80,
+				"modules": ["state", "model", "git", "context", "artifacts", "agents", "tasks", "sandbox"],
+				"newline": ["context"],
+				"separator": " · ",
+				"line_prefixes": ["╭─ ", "╰─ "]
+			},
+			{
+				"min_width": 0,
+				"modules": ["state", "model", "context", "tasks"],
+				"newline": ["context"],
+				"separator": " · "
+			}
+		]
+	}`
+	if err := os.WriteFile(optInCfg, []byte(cfgJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	medOut := execute(strings.NewReader(payload), optInCfg)
+	medLines := strings.Split(medOut, "\n")
+	if len(medLines) != 2 {
+		t.Fatalf("expected 2 lines for medium width, got %d:\n%s", len(medLines), medOut)
+	}
+	if !strings.HasPrefix(medLines[0], "╭─ ") || !strings.Contains(medLines[0], "WORKING") || !strings.Contains(medLines[0], "main") {
+		t.Errorf("medium line 0 unexpected: %q", medLines[0])
+	}
+	for _, want := range []string{"╰─ ", "14.2%", "artifacts", "subagents", "tasks", "sandbox", "ON"} {
+		if !strings.Contains(medLines[1], want) {
+			t.Errorf("medium line 1 missing %q: %q", want, medLines[1])
+		}
+	}
+
+	widePayload := strings.Replace(payload, `"terminal_width": 100`, `"terminal_width": 140`, 1)
+	wideOut := execute(strings.NewReader(widePayload), optInCfg)
+	if strings.Contains(wideOut, "\n") {
+		t.Errorf("expected single line for wide width, got:\n%s", wideOut)
+	}
+
+	narrowPayload := strings.Replace(payload, `"terminal_width": 100`, `"terminal_width": 60`, 1)
+	narrowOut := execute(strings.NewReader(narrowPayload), optInCfg)
+	if strings.Contains(narrowOut, "sandbox") || strings.Contains(narrowOut, "artifacts") {
+		t.Errorf("narrow layout should hide sandbox/artifacts, got:\n%s", narrowOut)
+	}
+}

@@ -1,6 +1,7 @@
 package module
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -134,4 +135,71 @@ func TestAgentsModule_NoDoubleEllipsisWhenTruncated(t *testing.T) {
 	if !strings.Contains(vars["running"], "...") {
 		t.Errorf("running should still end with ellipsis, got %q", vars["running"])
 	}
+}
+
+func TestAgentsModule_CountVars(t *testing.T) {
+	t.Run("non_empty_counts_before_trimming", func(t *testing.T) {
+		m := NewAgentsModule()
+		ctx := &Context{
+			Config: config.Default(),
+			Stdin: &stdin.Data{
+				Subagents: []stdin.Subagent{
+					{Name: "a", Status: "running"},
+					{Name: "b", Status: "completed"},
+					{Name: "c", Status: "completed"},
+				},
+			},
+		}
+		if err := m.Collect(ctx); err != nil {
+			t.Fatalf("Collect error: %v", err)
+		}
+		vars := m.Vars(ctx)
+		if vars["raw_count"] != "3" {
+			t.Errorf("raw_count = %q, want 3", vars["raw_count"])
+		}
+		if vars["count"] != ansi.Colored(ansi.Green, "3") {
+			t.Errorf("count = %q", vars["count"])
+		}
+		if vars["running_count"] != ansi.Colored(ansi.Green, "1") {
+			t.Errorf("running_count = %q", vars["running_count"])
+		}
+		if vars["completed_count"] != ansi.Colored(ansi.Green, "2") {
+			t.Errorf("completed_count = %q", vars["completed_count"])
+		}
+	})
+
+	t.Run("zero_subagents_hidden_by_default_but_shown_for_count_format", func(t *testing.T) {
+		defaultCfg := config.Default()
+		mDefault := NewAgentsModule()
+		ctxDefault := &Context{Config: defaultCfg, Stdin: &stdin.Data{}}
+		if err := mDefault.Collect(ctxDefault); err == nil {
+			t.Errorf("expected Collect error for default format when no subagents/transcript")
+		}
+		if vars := mDefault.Vars(ctxDefault); vars != nil {
+			t.Errorf("expected nil Vars for default format with zero agents, got %+v", vars)
+		}
+
+		dir := t.TempDir()
+		cfgPath := dir + "/config.json"
+		if err := writeTestFile(cfgPath, `{"agents": {"format": "subagents {count}"}}`); err != nil {
+			t.Fatal(err)
+		}
+		countCfg := config.Load(cfgPath)
+		mCount := NewAgentsModule()
+		ctxCount := &Context{Config: countCfg, Stdin: &stdin.Data{}}
+		if err := mCount.Collect(ctxCount); err != nil {
+			t.Fatalf("Collect error with count format: %v", err)
+		}
+		vars := mCount.Vars(ctxCount)
+		if vars == nil || vars["count"] != "0" || vars["raw_count"] != "0" {
+			t.Fatalf("unexpected count vars: %+v", vars)
+		}
+		if got := ExpandFormat(countCfg.ModuleConfig("agents").Format, vars); got != "subagents 0" {
+			t.Errorf("expanded = %q, want %q", got, "subagents 0")
+		}
+	})
+}
+
+func writeTestFile(path, content string) error {
+	return os.WriteFile(path, []byte(content), 0o600)
 }

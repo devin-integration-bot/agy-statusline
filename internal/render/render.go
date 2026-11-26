@@ -12,9 +12,15 @@ import (
 )
 
 // Render collects data from enabled modules concurrently and formats them in
-// configured order with newline grouping.
+// configured order with newline grouping and optional responsive layout rules.
 func Render(ctx *module.Context, registry *module.Registry, cfg *config.Config) string {
-	modules := registry.Enabled(cfg.Modules)
+	terminalWidth := 0
+	if ctx != nil && ctx.Stdin != nil {
+		terminalWidth = ctx.Stdin.TerminalWidth
+	}
+	layout := cfg.ResolveLayout(terminalWidth)
+
+	modules := registry.Enabled(layout.Modules)
 	if len(modules) == 0 {
 		return ""
 	}
@@ -57,7 +63,7 @@ func Render(ctx *module.Context, registry *module.Registry, cfg *config.Config) 
 			continue
 		}
 
-		if cfg.StartsNewline(m.Name()) && len(current) > 0 {
+		if layout.StartsNewline(m.Name()) && len(current) > 0 {
 			lines = append(lines, current)
 			current = []string{}
 		}
@@ -69,8 +75,12 @@ func Render(ctx *module.Context, registry *module.Registry, cfg *config.Config) 
 	}
 
 	var result []string
-	for _, line := range lines {
-		result = append(result, strings.Join(line, cfg.Separator))
+	for i, line := range lines {
+		lineStr := strings.Join(line, layout.Separator)
+		if i < len(layout.LinePrefixes) && layout.LinePrefixes[i] != "" {
+			lineStr = layout.LinePrefixes[i] + lineStr
+		}
+		result = append(result, lineStr)
 	}
 
 	return strings.Join(result, "\n")

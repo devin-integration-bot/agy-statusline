@@ -72,6 +72,9 @@ func TestContextModule(t *testing.T) {
 		if vars["percent"] != "14%" {
 			t.Errorf("percent = %q, want 14%%", vars["percent"])
 		}
+		if vars["percent_exact"] != "14.2%" {
+			t.Errorf("percent_exact = %q, want 14.2%%", vars["percent_exact"])
+		}
 	})
 
 	t.Run("small_window_clamps_effective_limit", func(t *testing.T) {

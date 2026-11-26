@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,11 +28,14 @@ func (m *AgentsModule) Collect(ctx *Context) error {
 		return nil
 	}
 	td := ctx.LoadTranscript()
-	if td == nil {
-		return errors.New("no agents data")
+	if td != nil {
+		m.agents = td.Agents
+		return nil
 	}
-	m.agents = td.Agents
-	return nil
+	if ctx.Stdin != nil && m.formatWantsCount(ctx) {
+		return nil
+	}
+	return errors.New("no agents data")
 }
 
 func (m *AgentsModule) Vars(ctx *Context) map[string]string {
@@ -75,6 +79,15 @@ func (m *AgentsModule) Vars(ctx *Context) map[string]string {
 		}
 	}
 
+	runningCount := len(runParts)
+	completedCount := len(compParts)
+	totalCount := runningCount + completedCount
+	if len(m.subagents) > 0 {
+		totalCount = len(m.subagents)
+	} else if len(m.agents) > 0 {
+		totalCount = len(m.agents)
+	}
+
 	// When agents are running, hide completed; otherwise keep only the latest.
 	if len(runParts) > 0 {
 		compParts = nil
@@ -82,7 +95,7 @@ func (m *AgentsModule) Vars(ctx *Context) map[string]string {
 		compParts = compParts[len(compParts)-1:]
 	}
 
-	if len(runParts) == 0 && len(compParts) == 0 {
+	if len(runParts) == 0 && len(compParts) == 0 && !m.formatWantsCount(ctx) {
 		return nil
 	}
 
@@ -90,13 +103,30 @@ func (m *AgentsModule) Vars(ctx *Context) map[string]string {
 	compStr := strings.Join(compParts, " | ")
 
 	return map[string]string{
-		"running":   runStr,
-		"completed": compStr,
-		"summary":   joinNonEmpty(" | ", runStr, compStr),
+		"running":         runStr,
+		"completed":       compStr,
+		"summary":         joinNonEmpty(" | ", runStr, compStr),
+		"count":           formatCount(totalCount),
+		"running_count":   formatCount(runningCount),
+		"completed_count": formatCount(completedCount),
+		"raw_count":       strconv.Itoa(totalCount),
 	}
 }
 
 func (m *AgentsModule) DefaultFormat() string { return "{running}" }
+
+func (m *AgentsModule) formatWantsCount(ctx *Context) bool {
+	format := m.DefaultFormat()
+	if ctx != nil && ctx.Config != nil {
+		if f := ctx.Config.ModuleConfig(m.Name()).Format; f != "" {
+			format = f
+		}
+	}
+	return strings.Contains(format, "{count}") ||
+		strings.Contains(format, "{running_count}") ||
+		strings.Contains(format, "{completed_count}") ||
+		strings.Contains(format, "{raw_count}")
+}
 
 func formatCompletedAgent(icon, name string, a transcript.AgentEntry) string {
 	if !a.EndTime.IsZero() && !a.StartTime.IsZero() {

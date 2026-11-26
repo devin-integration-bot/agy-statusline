@@ -58,7 +58,8 @@ A default config is auto-generated on first run at `~/.gemini/antigravity-cli/pl
 ```jsonc
 {
   // Enabled modules, rendered left-to-right in this order.
-  // Available: context, usage, model, tps, git, tools, agents, project, environment, session
+  // Available: context, usage, model, tps, git, tools, agents, project,
+  // environment, session, state, sandbox, artifacts, subagents, tasks
   "modules": ["context", "usage", "model", "tps", "git", "tools", "agents", "environment", "session"],
 
   // Separator between modules on the same line.
@@ -67,11 +68,39 @@ A default config is auto-generated on first run at `~/.gemini/antigravity-cli/pl
   // Modules listed here start on a new line instead of being separated.
   "newline": ["tools", "agents", "environment"],
 
+  // Optional per-line prefixes (disabled by default), e.g. ["╭─ ", "╰─ "].
+  // "line_prefixes": ["╭─ ", "╰─ "],
+
+  // Optional terminal_width responsive layout overrides (disabled by default).
+  // Matches the highest min_width <= terminal_width (defaults to 80 if omitted).
+  // "responsive": [
+  //   {
+  //     "min_width": 120,
+  //     "modules": ["state", "model", "git", "context", "artifacts", "agents", "tasks", "sandbox"],
+  //     "newline": [],
+  //     "separator": " · "
+  //   },
+  //   {
+  //     "min_width": 80,
+  //     "modules": ["state", "model", "git", "context", "artifacts", "agents", "tasks", "sandbox"],
+  //     "newline": ["context"],
+  //     "separator": " · ",
+  //     "line_prefixes": ["╭─ ", "╰─ "]
+  //   },
+  //   {
+  //     "min_width": 0,
+  //     "modules": ["state", "model", "context", "tasks"],
+  //     "newline": ["context"],
+  //     "separator": " · "
+  //   }
+  // ],
+
   // Progress bar style. Built-in: block, square, small, bar, dot,
-  // diamond, line, braille, shade, half, half-block
+  // diamond, line, braille, shade, half, half-block, fine
   "bar_style": "diamond",
 
-  // Custom bar styles. Each entry is [filled, empty] character pair.
+  // Custom bar styles. Each entry is [filled, empty] or a multi-step scale
+  // ordered from full to empty (e.g. ["█", "▓", "▒", "░", "·"]).
   "bar_styles": {
     "stars": ["★", "☆"]
   },
@@ -81,7 +110,12 @@ A default config is auto-generated on first run at `~/.gemini/antigravity-cli/pl
     "running": "≡",
     "completed": "✓",
     "error": "✗",
-    "dirty": "*"
+    "dirty": "*",
+    "state_idle": "●",
+    "state_thinking": "◆",
+    "state_working": "⚙",
+    "state_tool_use": "🔧",
+    "state_other": "⏳"
   },
 
   // Max bytes to read from the end of JSONL transcript.
@@ -89,7 +123,7 @@ A default config is auto-generated on first run at `~/.gemini/antigravity-cli/pl
   "max_tail_size": "2MB",
 
   // Context window usage.
-  // Variables: {dot} {bar} {percent} {tokens} {window} {remaining} {breakdown}
+  // Variables: {dot} {bar} {percent} {percent_exact} {tokens} {window} {remaining} {breakdown}
   "context": {
     "format": "{dot} Ctx {bar} {percent}",
     "bar_width": 10,
@@ -126,9 +160,39 @@ A default config is auto-generated on first run at `~/.gemini/antigravity-cli/pl
   },
 
   // Subagent tracking (hidden when none are running by default).
-  // Variables: {running} {completed} {summary}
+  // Variables: {running} {completed} {summary} {count} {running_count} {completed_count} {raw_count}
   "agents": {
     "format": "{running}"
+  },
+
+  // Agent state badge (disabled by default).
+  // Variables: {state} {icon} {label} {raw}
+  "state": {
+    "format": "{state}"
+  },
+
+  // Sandbox status badge (disabled by default).
+  // Variables: {sandbox} {status} {raw}
+  "sandbox": {
+    "format": "{sandbox}"
+  },
+
+  // Session artifact count (disabled by default).
+  // Variables: {count} {raw}
+  "artifacts": {
+    "format": "artifacts {count}"
+  },
+
+  // Subagent count (disabled by default; keeps agents free for running details).
+  // Variables: {count} {running} {raw} {raw_running}
+  "subagents": {
+    "format": "subagents {count}"
+  },
+
+  // Background task count (disabled by default).
+  // Variables: {count} {raw}
+  "tasks": {
+    "format": "tasks {count}"
   },
 
   // Model and project info (disabled by default).

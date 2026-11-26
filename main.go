@@ -34,9 +34,9 @@ func execute(r io.Reader, cfgPath string) string {
 		CWD:            data.EffectiveCWD(),
 	}
 
-	filled, empty := cfg.BarChars()
-	contextBar := render.NewContextBar(filled, empty)
-	quotaBar := render.NewQuotaBar(filled, empty)
+	barChars := cfg.BarStyleChars()
+	contextBar := render.NewContextBar(barChars...)
+	quotaBar := render.NewQuotaBar(barChars...)
 
 	registry := module.NewRegistry()
 
@@ -58,6 +58,11 @@ func execute(r io.Reader, cfgPath string) string {
 	registry.Register(module.NewProjectModule())
 	registry.Register(module.NewEnvironmentModule())
 	registry.Register(module.NewSessionModule())
+	registry.Register(module.NewStateModule())
+	registry.Register(module.NewSandboxModule())
+	registry.Register(module.NewArtifactsModule())
+	registry.Register(module.NewSubagentsModule())
+	registry.Register(module.NewTasksModule())
 
 	return render.Render(ctx, registry, cfg)
 }

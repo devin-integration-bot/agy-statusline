@@ -15,15 +15,39 @@ import (
 )
 
 type Config struct {
-	Modules     []string             `json:"modules"`
-	Separator   string               `json:"separator"`
-	Newline     []string             `json:"newline"`
-	BarStyle    string               `json:"bar_style"`
-	BarStyles   map[string][2]string `json:"-"` // merged from "bar_styles" in Load
-	Icons       map[string]string    `json:"-"` // merged from "icons" in Load
-	MaxTailSize string               `json:"max_tail_size"`
+	Modules      []string            `json:"modules"`
+	Separator    string              `json:"separator"`
+	Newline      []string            `json:"newline"`
+	LinePrefixes []string            `json:"line_prefixes,omitempty"`
+	Responsive   []ResponsiveLayout  `json:"responsive,omitempty"`
+	BarStyle     string              `json:"bar_style"`
+	BarStyles    map[string][]string `json:"-"` // merged from "bar_styles" in Load
+	Icons        map[string]string   `json:"-"` // merged from "icons" in Load
+	MaxTailSize  string              `json:"max_tail_size"`
 
 	moduleConfs map[string]ModuleConf // per-module sections, parsed once in Load
+}
+
+// ResponsiveLayout overrides layout settings when stdin terminal_width meets
+// or exceeds MinWidth. Disabled by default unless configured under "responsive".
+type ResponsiveLayout struct {
+	MinWidth     int      `json:"min_width"`
+	Modules      []string `json:"modules"`
+	Newline      []string `json:"newline"`
+	Separator    *string  `json:"separator"`
+	LinePrefixes []string `json:"line_prefixes"`
+}
+
+// ResolvedLayout holds the effective layout for a single render pass.
+type ResolvedLayout struct {
+	Modules      []string
+	Newline      []string
+	Separator    string
+	LinePrefixes []string
+}
+
+func (l ResolvedLayout) StartsNewline(name string) bool {
+	return slices.Contains(l.Newline, name)
 }
 
 type ModuleConf struct {
@@ -32,7 +56,7 @@ type ModuleConf struct {
 	ContextLimit *int   `json:"context_limit,omitempty"`
 }
 
-var defaultBarStyles = map[string][2]string{
+var defaultBarStyles = map[string][]string{
 	"block":      {"█", "░"},
 	"square":     {"■", "□"},
 	"small":      {"▪", "▫"},
@@ -44,18 +68,34 @@ var defaultBarStyles = map[string][2]string{
 	"shade":      {"▓", "░"},
 	"half":       {"▄", "▁"},
 	"half-block": {"▌", "░"},
+	"fine":       {"█", "▓", "▒", "░", "·"},
 }
 
 var defaultIcons = map[string]string{
-	"running":   "≡",
-	"completed": "✓",
-	"error":     "✗",
-	"dirty":     "*",
+	"running":        "≡",
+	"completed":      "✓",
+	"error":          "✗",
+	"dirty":          "*",
+	"state_idle":     "●",
+	"state_thinking": "◆",
+	"state_working":  "⚙",
+	"state_tool_use": "🔧",
+	"state_other":    "⏳",
 }
 
 // DefaultMaxTailSize keeps transcript scanning fast even on huge sessions
 // while covering recent turns.
 const DefaultMaxTailSize = "2MB"
+
+const defaultTerminalWidth = 80
+
+func cloneBarStyles(src map[string][]string) map[string][]string {
+	dst := make(map[string][]string, len(src))
+	for k, v := range src {
+		dst[k] = slices.Clone(v)
+	}
+	return dst
+}
 
 func Default() *Config {
 	return &Config{
@@ -63,7 +103,7 @@ func Default() *Config {
 		Separator:   " | ",
 		Newline:     []string{"tools", "agents", "environment"},
 		BarStyle:    "diamond",
-		BarStyles:   maps.Clone(defaultBarStyles),
+		BarStyles:   cloneBarStyles(defaultBarStyles),
 		Icons:       maps.Clone(defaultIcons),
 		MaxTailSize: DefaultMaxTailSize,
 	}
@@ -132,9 +172,13 @@ func Load(path string) *Config {
 	var raw map[string]json.RawMessage
 	_ = json.Unmarshal(data, &raw)
 
-	var styles map[string][2]string
+	var styles map[string][]string
 	if v, ok := raw["bar_styles"]; ok && json.Unmarshal(v, &styles) == nil {
-		maps.Copy(cfg.BarStyles, styles)
+		for k, chars := range styles {
+			if len(chars) >= 2 {
+				cfg.BarStyles[k] = slices.Clone(chars)
+			}
+		}
 	}
 	var icons map[string]string
 	if v, ok := raw["icons"]; ok && json.Unmarshal(v, &icons) == nil {
@@ -150,12 +194,21 @@ func Load(path string) *Config {
 	return cfg
 }
 
+// BarStyleChars returns the character sequence for the active bar style,
+// ordered from full to empty (e.g. ["◆", "◇"] or ["█", "▓", "▒", "░", "·"]).
+func (c *Config) BarStyleChars() []string {
+	if c != nil {
+		if chars, ok := c.BarStyles[c.BarStyle]; ok && len(chars) >= 2 {
+			return slices.Clone(chars)
+		}
+	}
+	return []string{"█", "░"}
+}
+
 // BarChars returns the [filled, empty] character pair for the active bar style.
 func (c *Config) BarChars() (string, string) {
-	if pair, ok := c.BarStyles[c.BarStyle]; ok {
-		return pair[0], pair[1]
-	}
-	return "█", "░"
+	chars := c.BarStyleChars()
+	return chars[0], chars[len(chars)-1]
 }
 
 // Icon returns the icon for the given key, falling back to the built-in default.
@@ -246,6 +299,53 @@ func (c *Config) IsEnabled(name string) bool {
 
 func (c *Config) StartsNewline(name string) bool {
 	return slices.Contains(c.Newline, name)
+}
+
+// ResolveLayout returns the effective layout for the given terminal width.
+// When no responsive rules are configured (the default), the base layout is
+// returned unchanged. When terminalWidth <= 0, it defaults to 80 columns.
+func (c *Config) ResolveLayout(terminalWidth int) ResolvedLayout {
+	if c == nil {
+		return ResolvedLayout{}
+	}
+	layout := ResolvedLayout{
+		Modules:      c.Modules,
+		Newline:      c.Newline,
+		Separator:    c.Separator,
+		LinePrefixes: c.LinePrefixes,
+	}
+	if len(c.Responsive) == 0 {
+		return layout
+	}
+
+	width := terminalWidth
+	if width <= 0 {
+		width = defaultTerminalWidth
+	}
+
+	var best *ResponsiveLayout
+	for i := range c.Responsive {
+		r := &c.Responsive[i]
+		if r.MinWidth <= width && (best == nil || r.MinWidth > best.MinWidth) {
+			best = r
+		}
+	}
+	if best == nil {
+		return layout
+	}
+	if best.Modules != nil {
+		layout.Modules = best.Modules
+	}
+	if best.Newline != nil {
+		layout.Newline = best.Newline
+	}
+	if best.Separator != nil {
+		layout.Separator = *best.Separator
+	}
+	if best.LinePrefixes != nil {
+		layout.LinePrefixes = best.LinePrefixes
+	}
+	return layout
 }
 
 func writeDefault(path string, cfg *Config) {

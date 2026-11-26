@@ -118,3 +118,95 @@ func TestEnvDirs(t *testing.T) {
 		t.Errorf("DefaultPath = %q", got)
 	}
 }
+
+func TestDefault_NewFeaturesDisabled(t *testing.T) {
+	cfg := Default()
+	for _, optIn := range []string{"state", "sandbox", "artifacts", "subagents", "tasks", "project"} {
+		if cfg.IsEnabled(optIn) {
+			t.Errorf("module %q should be disabled by default", optIn)
+		}
+	}
+	if len(cfg.Responsive) != 0 {
+		t.Errorf("Responsive should be empty by default, got %+v", cfg.Responsive)
+	}
+	if len(cfg.LinePrefixes) != 0 {
+		t.Errorf("LinePrefixes should be empty by default, got %+v", cfg.LinePrefixes)
+	}
+	if cfg.BarStyle != "diamond" {
+		t.Errorf("BarStyle = %q, want diamond", cfg.BarStyle)
+	}
+}
+
+func TestLoad_BarStylesMultiStepAndValidation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	content := `{
+		"bar_style": "fine",
+		"bar_styles": {
+			"invalid_one": ["X"],
+			"custom_fine": ["#", "=", "-", "."]
+		}
+	}`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Load(path)
+	got := cfg.BarStyleChars()
+	want := []string{"█", "▓", "▒", "░", "·"}
+	if len(got) != len(want) {
+		t.Fatalf("fine BarStyleChars = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("fine BarStyleChars[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	if _, ok := cfg.BarStyles["invalid_one"]; ok {
+		t.Errorf("single-element bar_style should be ignored")
+	}
+	cfg.BarStyle = "custom_fine"
+	f, e := cfg.BarChars()
+	if f != "#" || e != "." {
+		t.Errorf("BarChars = (%q, %q), want (#, .)", f, e)
+	}
+}
+
+func TestResolveLayout_Responsive(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	content := `{
+		"modules": ["context", "model"],
+		"separator": " | ",
+		"newline": ["model"],
+		"responsive": [
+			{"min_width": 0, "modules": ["state", "context"], "newline": ["context"], "separator": " · "},
+			{"min_width": 120, "modules": ["state", "model", "context"], "newline": [], "separator": "  │  "},
+			{"min_width": 80, "modules": ["state", "model", "context"], "newline": ["context"], "separator": " · ", "line_prefixes": ["╭─ ", "╰─ "]}
+		]
+	}`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Load(path)
+
+	wide := cfg.ResolveLayout(140)
+	if len(wide.Newline) != 0 || wide.Separator != "  │  " || len(wide.LinePrefixes) != 0 {
+		t.Errorf("wide layout = %+v", wide)
+	}
+
+	medium := cfg.ResolveLayout(100)
+	if len(medium.Newline) != 1 || medium.Newline[0] != "context" || len(medium.LinePrefixes) != 2 || medium.LinePrefixes[0] != "╭─ " {
+		t.Errorf("medium layout = %+v", medium)
+	}
+
+	// Zero terminal width defaults to 80 (medium).
+	defaultWidth := cfg.ResolveLayout(0)
+	if defaultWidth.Separator != " · " || len(defaultWidth.LinePrefixes) != 2 {
+		t.Errorf("defaultWidth(0) layout = %+v, want medium", defaultWidth)
+	}
+
+	narrow := cfg.ResolveLayout(60)
+	if len(narrow.Modules) != 2 || narrow.Modules[0] != "state" || narrow.Modules[1] != "context" {
+		t.Errorf("narrow layout = %+v", narrow)
+	}
+}

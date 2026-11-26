@@ -59,17 +59,22 @@ func (m *ContextModule) Vars(ctx *Context) map[string]string {
 	}
 
 	pct := 0
+	exactPct := 0.0
 	overLimit := false
 	switch {
 	case effectiveSize > 0:
-		pct = max(0, int(math.Round(float64(total)/float64(effectiveSize)*100)))
+		rawPct := max(0.0, float64(total)/float64(effectiveSize)*100)
+		exactPct = min(100.0, rawPct)
+		pct = int(math.Round(rawPct))
 		if pct > 100 {
 			overLimit = m.contextLimit > 0 && (size == 0 || m.contextLimit < size)
 			pct = 100
 		}
 	case ctx.Stdin.ContextWindow.UsedPercentage != nil:
+		exactPct = max(0.0, min(100.0, *ctx.Stdin.ContextWindow.UsedPercentage))
 		pct = clampPercent(*ctx.Stdin.ContextWindow.UsedPercentage)
 	case ctx.Stdin.ContextWindow.RemainingPercentage != nil:
+		exactPct = max(0.0, min(100.0, 100.0-*ctx.Stdin.ContextWindow.RemainingPercentage))
 		pct = clampPercent(100.0 - *ctx.Stdin.ContextWindow.RemainingPercentage)
 	}
 
@@ -91,12 +96,13 @@ func (m *ContextModule) Vars(ctx *Context) map[string]string {
 	}
 
 	vars := map[string]string{
-		"dot":       ansi.Colored(dotColor, "●"),
-		"bar":       barStr,
-		"percent":   pctStr,
-		"tokens":    formatTokens(total),
-		"window":    formatTokens(size),
-		"remaining": formatTokens(remaining),
+		"dot":           ansi.Colored(dotColor, "●"),
+		"bar":           barStr,
+		"percent":       pctStr,
+		"percent_exact": fmt.Sprintf("%.1f%%", exactPct),
+		"tokens":        formatTokens(total),
+		"window":        formatTokens(size),
+		"remaining":     formatTokens(remaining),
 	}
 
 	if pct >= 85 && ctx.Stdin.ContextWindow.CurrentUsage != nil {
