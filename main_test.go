@@ -10,6 +10,10 @@ import (
 func TestExecute_EndToEnd(t *testing.T) {
 	t.Setenv("AGY_CONFIG_DIR", t.TempDir())
 	dir := t.TempDir()
+	repoDir := filepath.Join(dir, "agy-statusline")
+	if err := os.MkdirAll(filepath.Join(repoDir, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	cfgPath := filepath.Join(dir, "config.json")
 	transcriptPath := filepath.Join(dir, "transcript.jsonl")
 	transcriptContent := strings.Join([]string{
@@ -22,7 +26,7 @@ func TestExecute_EndToEnd(t *testing.T) {
 	}
 
 	payload := `{
-		"cwd": "` + dir + `",
+		"cwd": "` + repoDir + `",
 		"conversation_id": "73f8c8da-819a-4dfa-9bd3-575c931cc932",
 		"transcript_path": "` + transcriptPath + `",
 		"model": {"display_name": "Gemini 4 Neon (High)"},
@@ -43,13 +47,14 @@ func TestExecute_EndToEnd(t *testing.T) {
 	if len(lines) < 4 {
 		t.Fatalf("expected at least 4 lines, got %d:\n%s", len(lines), out)
 	}
-	if !strings.Contains(lines[0], "Ctx") || !strings.Contains(lines[0], "Usage") || !strings.Contains(lines[0], "Gemini 4 Neon (High)") || !strings.Contains(lines[0], "85.0 tok/s") || !strings.Contains(lines[0], "main") {
+	if !strings.Contains(lines[0], "Ctx") || !strings.Contains(lines[0], "Usage") || !strings.Contains(lines[0], "Gemini 4 Neon (High)") || !strings.Contains(lines[0], "85.0 tok/s") || !strings.Contains(lines[0], "agy-statusline") || !strings.Contains(lines[0], "main") {
 		t.Errorf("line 0 unexpected: %q", lines[0])
 	}
 	if strings.Index(lines[0], "Usage") > strings.Index(lines[0], "Gemini 4 Neon (High)") ||
 		strings.Index(lines[0], "Gemini 4 Neon (High)") > strings.Index(lines[0], "85.0 tok/s") ||
-		strings.Index(lines[0], "85.0 tok/s") > strings.Index(lines[0], "main") {
-		t.Errorf("expected order usage -> model -> tps -> git in line 0: %q", lines[0])
+		strings.Index(lines[0], "85.0 tok/s") > strings.Index(lines[0], "agy-statusline") ||
+		strings.Index(lines[0], "agy-statusline") > strings.Index(lines[0], "main") {
+		t.Errorf("expected order usage -> model -> tps -> dir -> git in line 0: %q", lines[0])
 	}
 	if !strings.Contains(lines[1], "read_file ×1") {
 		t.Errorf("line 1 unexpected: %q", lines[1])

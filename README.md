@@ -5,7 +5,7 @@ A fast, zero-dependency, modular statusline for [Antigravity CLI (`agy`)](https:
 Single Go binary. Zero external dependencies. Concurrent data collection. Starts in <5ms.
 
 ```
-● Ctx ◆◇◇◇◇◇◇◇◇◇ 14% | Usage ◆◇◇◇◇◇◇◇◇◇ 4% (2h 22m) | ◆◆◆◇◇◇◇◇◇◇ 31% (2d 14h) | Gemini 4 Neon (High) | 85.2 tok/s | main*
+● Ctx ◆◇◇◇◇◇◇◇◇◇ 14% | Usage ◆◇◇◇◇◇◇◇◇◇ 4% (2h 22m) | ◆◆◆◇◇◇◇◇◇◇ 31% (2d 14h) | Gemini 4 Neon (High) | 85.2 tok/s | agy-statusline | main*
 ≡ read_file: ...config.go | ✓ run_command ×5 | ✓ edit_file ×3 | ✓ read_file ×12
 ≡ Review all uncommitted changes...
 2 AGENTS.md | 5 rules | 5 skills | 0 MCPs | 0 hooks | 73f8c8da-819a-4dfa-9bd3-575c931cc932
@@ -48,7 +48,7 @@ A default config is auto-generated on first run at `~/.gemini/antigravity-cli/pl
 
 ```json
 {
-  "modules": ["context", "usage", "model", "tps", "git", "tools", "agents", "environment", "session"],
+  "modules": ["context", "usage", "model", "tps", "dir", "git", "tools", "agents", "environment", "session"],
   "separator": " | "
 }
 ```
@@ -58,9 +58,9 @@ A default config is auto-generated on first run at `~/.gemini/antigravity-cli/pl
 ```jsonc
 {
   // Enabled modules, rendered left-to-right in this order.
-  // Available: context, usage, model, tps, git, tools, agents, project,
+  // Available: context, usage, model, tps, dir, git, tools, agents, project,
   // environment, session, state, sandbox, artifacts, subagents, tasks
-  "modules": ["context", "usage", "model", "tps", "git", "tools", "agents", "environment", "session"],
+  "modules": ["context", "usage", "model", "tps", "dir", "git", "tools", "agents", "environment", "session"],
 
   // Separator between modules on the same line.
   "separator": " | ",
@@ -146,6 +146,12 @@ A default config is auto-generated on first run at `~/.gemini/antigravity-cli/pl
   // Variables: {tps} {rate} {avg} {avg_rate} {decode} {decode_rate} {ttft} {tokens} {duration}
   "tps": {
     "format": "{tps}"
+  },
+
+  // Current directory (git repo root, basename, or ~/name when 1 level under home).
+  // Variables: {dir} {name} {path} {root}
+  "dir": {
+    "format": "{dir}"
   },
 
   // Git branch info. Variables: {branch} {dirty} {ahead} {behind}

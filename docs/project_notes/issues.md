@@ -1,5 +1,10 @@
 # Work Log
 
+### 2026-11-26 - Add current directory statusline module before git branch
+- **Status**: Verified
+- **Description**: Added standalone `dir` module placed before `git`, showing main git repository root (including subdirs and linked worktrees), basename for nested non-git directories, and `~/name` (or `~`) when at most one level under home.
+- **Verification**: `go test -race -cover ./...`, `golangci-lint run`, `CGO_ENABLED=0 go install`, adversarial review fixes, and real-config smoke checks all passed.
+
 ### 2026-11-26 - Fix TPS accuracy and add short-step guard with optional OLS decode/TTFT
 - **Status**: Verified
 - **Description**: Switched TPS to hybrid transcript+live per-step measurement using max first-seen `GENERIC` timestamp across all `tool_calls`, anchored text-only replies to `LatestTextStep.CreatedAt`, guarded primary `{tps}` against `< 1000`-token TTFT-dominated steps with per-model reset, and added optional OLS `{decode}` / `{decode_rate}` / `{ttft}` variables.
