@@ -173,6 +173,16 @@ func TestDirModule_EmptyCWD(t *testing.T) {
 	if vars := m.Vars(ctx); vars != nil {
 		t.Errorf("expected nil vars on empty CWD, got %+v", vars)
 	}
+
+	// Reusing the same instance with an empty CWD must clear previous state.
+	_ = m.Collect(&Context{CWD: t.TempDir()})
+	if vars := m.Vars(&Context{}); vars == nil {
+		t.Fatal("expected non-nil vars after non-empty CWD")
+	}
+	_ = m.Collect(&Context{})
+	if vars := m.Vars(&Context{}); vars != nil {
+		t.Errorf("expected nil vars after resetting with empty CWD, got %+v", vars)
+	}
 }
 
 func TestDirModule_EdgeCases(t *testing.T) {

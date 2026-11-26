@@ -33,6 +33,9 @@ func NewDirModule() *DirModule {
 func (m *DirModule) Name() string { return "dir" }
 
 func (m *DirModule) Collect(ctx *Context) error {
+	m.display = ""
+	m.path = ""
+	m.gitRoot = ""
 	if ctx == nil || strings.TrimSpace(ctx.CWD) == "" {
 		return nil
 	}
@@ -53,8 +56,7 @@ func (m *DirModule) Collect(ctx *Context) error {
 	home, _ := m.homeDir()
 
 	m.gitRoot = gitRoot
-	m.path = shortenHomePath(target, home)
-	m.display = formatDirDisplay(target, home)
+	m.display, m.path = formatDir(target, home)
 	return nil
 }
 
@@ -78,45 +80,29 @@ func (m *DirModule) DefaultFormat() string {
 	return "{dir}"
 }
 
-// formatDirDisplay formats target according to home-relative depth:
-//   - target == home -> "~"
-//   - target is 1 level beneath home (e.g. ~/tmp) -> "~/tmp"
-//   - otherwise -> filepath.Base(target)
-func formatDirDisplay(target, home string) string {
+// formatDir computes both the display label and ~-shortened full path for
+// target using a single home-relative calculation:
+//   - target == home -> ("~", "~")
+//   - target is 1 level beneath home (e.g. ~/tmp) -> ("~/tmp", "~/tmp")
+//   - deeper beneath home -> (filepath.Base(target), "~/a/b/...")
+//   - outside home -> (filepath.Base(target), target)
+func formatDir(target, home string) (display, shortPath string) {
 	target = filepath.Clean(target)
 	if home != "" {
-		home = filepath.Clean(home)
-		if rel, err := filepath.Rel(home, target); err == nil {
+		if rel, err := filepath.Rel(filepath.Clean(home), target); err == nil {
 			if rel == "." {
-				return "~"
+				return "~", "~"
 			}
-			if rel != ".." &&
-				!strings.HasPrefix(rel, ".."+string(filepath.Separator)) &&
-				!strings.ContainsRune(rel, filepath.Separator) {
-				return "~/" + rel
+			if rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				shortPath = "~/" + filepath.ToSlash(rel)
+				if !strings.ContainsRune(rel, filepath.Separator) {
+					return shortPath, shortPath
+				}
+				return filepath.Base(target), shortPath
 			}
 		}
 	}
-	return filepath.Base(target)
-}
-
-func shortenHomePath(target, home string) string {
-	target = filepath.Clean(target)
-	if home == "" {
-		return target
-	}
-	home = filepath.Clean(home)
-	rel, err := filepath.Rel(home, target)
-	if err != nil {
-		return target
-	}
-	if rel == "." {
-		return "~"
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return target
-	}
-	return "~/" + filepath.ToSlash(rel)
+	return filepath.Base(target), target
 }
 
 // findGitRoot walks upward from cwd to locate the enclosing git repository root.
