@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/mritd/agy-statusline/internal/debug"
 )
@@ -28,6 +30,23 @@ const (
 	StatusCompleted Status = "completed"
 	StatusError     Status = "error"
 )
+
+// GoalStatus represents the lifecycle state of a /goal task in the transcript.
+type GoalStatus string
+
+const (
+	GoalNone      GoalStatus = ""
+	GoalActive    GoalStatus = "active"
+	GoalCompleted GoalStatus = "completed"
+	GoalCancelled GoalStatus = "cancelled"
+)
+
+// GoalState holds the latest /goal status observed in the transcript.
+type GoalState struct {
+	Status    GoalStatus
+	StartTime time.Time
+	Text      string
+}
 
 type Data struct {
 	Tools             []ToolEntry
@@ -48,6 +67,12 @@ type Data struct {
 	// Most recent completed text-only PLANNER_RESPONSE (no tool_calls), used by
 	// live TPS tracking to anchor final-reply start time without prior tool time.
 	LatestTextStep TextPlannerStep
+
+	// Latest /goal lifecycle state detected in the scanned transcript window.
+	// FullScan is true only when the file was opened and scanned from byte 0
+	// to EOF without errors.
+	Goal     GoalState
+	FullScan bool
 }
 
 // TPSStep records a finalized tool-calling PLANNER_RESPONSE measurement.
@@ -97,10 +122,19 @@ type plannerSample struct {
 	active         bool
 }
 
+const (
+	goalStartMarker     = "/goal is a [Slash Command]:"
+	goalCompleteMarker  = "<!-- GOAL_COMPLETE -->"
+	goalCancelledMarker = "<!-- GOAL_CANCELLED -->"
+)
+
 var (
 	patUserInput       = []byte(`"USER_INPUT"`)
 	patPlannerResponse = []byte(`"PLANNER_RESPONSE"`)
 	patGeneric         = []byte(`"GENERIC"`)
+	patGoalStart       = []byte(goalStartMarker)
+	patGoalComplete    = []byte(`GOAL_COMPLETE`)
+	patGoalCancelled   = []byte(`GOAL_CANCELLED`)
 )
 
 // Parse reads an Antigravity CLI transcript.jsonl file (tail-scanned up to
@@ -170,6 +204,16 @@ func Parse(path string, maxTailBytes int64) (*Data, error) {
 			pending = nil
 			clear(stepBound)
 
+			if bytes.Contains(line, patGoalStart) {
+				if content, ok := unmarshalContent(line); ok && hasGoalStartMetadata(content) {
+					data.Goal = GoalState{
+						Status:    GoalActive,
+						StartTime: entry.CreatedAt,
+						Text:      extractGoalText(content),
+					}
+				}
+			}
+
 		case "PLANNER_RESPONSE":
 			flushPlanner(data, &lastPlanner, false)
 			// Isolate TPS history to the active model when a session switches models.
@@ -180,6 +224,17 @@ func Parse(path string, maxTailBytes int64) (*Data, error) {
 				activeModel = entry.Model
 			}
 			if len(entry.ToolCalls) == 0 {
+				if (data.Goal.Status == GoalActive || (seeked && data.Goal.Status == GoalNone)) &&
+					(bytes.Contains(line, patGoalComplete) || bytes.Contains(line, patGoalCancelled)) {
+					if content, ok := unmarshalContent(line); ok {
+						switch {
+						case hasGoalMarker(content, goalCancelledMarker):
+							data.Goal.Status = GoalCancelled
+						case hasGoalMarker(content, goalCompleteMarker):
+							data.Goal.Status = GoalCompleted
+						}
+					}
+				}
 				if entry.OutputTokens > 0 && !entry.CreatedAt.IsZero() && entry.Status != "RUNNING" {
 					data.LatestTextStep = TextPlannerStep{
 						StepIndex:    entry.StepIndex,
@@ -313,6 +368,8 @@ func Parse(path string, maxTailBytes int64) (*Data, error) {
 
 	if err := scanner.Err(); err != nil {
 		debug.Log("transcript", "scan error: %v", err)
+	} else if !seeked {
+		data.FullScan = true
 	}
 
 	// After tail scan, discard orphan running tools and agents from before the last user prompt.
@@ -496,4 +553,157 @@ type jsonEntry struct {
 type toolCallEntry struct {
 	Name string                     `json:"name"`
 	Args map[string]json.RawMessage `json:"args"`
+}
+
+func unmarshalContent(line []byte) (string, bool) {
+	var c struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(line, &c); err != nil {
+		return "", false
+	}
+	return c.Content, true
+}
+
+// hasGoalStartMetadata verifies that goalStartMarker appears inside the
+// system-injected <ADDITIONAL_METADATA> block (after </USER_REQUEST> when
+// present) so pasting the marker inside user text cannot falsely activate /goal.
+func hasGoalStartMetadata(content string) bool {
+	search := content
+	if closeReq := strings.Index(search, "</USER_REQUEST>"); closeReq >= 0 {
+		search = search[closeReq+len("</USER_REQUEST>"):]
+	}
+	metaIdx := strings.Index(search, "<ADDITIONAL_METADATA>")
+	if metaIdx < 0 {
+		return false
+	}
+	return strings.Contains(search[metaIdx:], goalStartMarker)
+}
+
+// hasGoalMarker reports whether content contains marker outside CommonMark
+// fenced code blocks (` or ~) and inline backtick code spans so prose quoting
+// the marker does not trigger it.
+func hasGoalMarker(content, marker string) bool {
+	var fenceChar byte
+	fenceLen := 0
+	for line := range strings.SplitSeq(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if fenceLen == 0 {
+			if ch, n, ok := openCodeFence(trimmed); ok {
+				fenceChar = ch
+				fenceLen = n
+				continue
+			}
+			if containsUnquotedMarker(line, marker) {
+				return true
+			}
+		} else if isClosingCodeFence(trimmed, fenceChar, fenceLen) {
+			fenceChar = 0
+			fenceLen = 0
+		}
+	}
+	return false
+}
+
+func openCodeFence(trimmed string) (byte, int, bool) {
+	if len(trimmed) < 3 {
+		return 0, 0, false
+	}
+	ch := trimmed[0]
+	if ch != '`' && ch != '~' {
+		return 0, 0, false
+	}
+	n := 0
+	for n < len(trimmed) && trimmed[n] == ch {
+		n++
+	}
+	if n < 3 {
+		return 0, 0, false
+	}
+	// CommonMark: backtick fence info strings cannot contain backticks
+	// (distinguishes inline ```code``` on a single line from a fenced block).
+	if ch == '`' && strings.IndexByte(trimmed[n:], '`') >= 0 {
+		return 0, 0, false
+	}
+	return ch, n, true
+}
+
+func isClosingCodeFence(trimmed string, fenceChar byte, fenceLen int) bool {
+	if len(trimmed) < fenceLen {
+		return false
+	}
+	n := 0
+	for n < len(trimmed) && trimmed[n] == fenceChar {
+		n++
+	}
+	return n >= fenceLen && n == len(trimmed)
+}
+
+func containsUnquotedMarker(line, marker string) bool {
+	openTicks := 0
+	for i := 0; i < len(line); {
+		if line[i] == '`' {
+			n := 1
+			for i+n < len(line) && line[i+n] == '`' {
+				n++
+			}
+			switch openTicks {
+			case 0:
+				if hasMatchingBackticks(line[i+n:], n) {
+					openTicks = n
+				}
+			case n:
+				openTicks = 0
+			}
+			i += n
+			continue
+		}
+		if openTicks == 0 && strings.HasPrefix(line[i:], marker) {
+			return true
+		}
+		i++
+	}
+	return false
+}
+
+func hasMatchingBackticks(s string, target int) bool {
+	for i := 0; i < len(s); {
+		if s[i] != '`' {
+			i++
+			continue
+		}
+		n := 1
+		for i+n < len(s) && s[i+n] == '`' {
+			n++
+		}
+		if n == target {
+			return true
+		}
+		i += n
+	}
+	return false
+}
+
+func extractGoalText(content string) string {
+	const openTag = "<USER_REQUEST>"
+	const closeTag = "</USER_REQUEST>"
+
+	start := strings.Index(content, openTag)
+	if start < 0 {
+		return ""
+	}
+	body := content[start+len(openTag):]
+	if end := strings.Index(body, closeTag); end >= 0 {
+		body = body[:end]
+	}
+
+	body = strings.TrimSpace(body)
+	if len(body) >= 5 && strings.EqualFold(body[:5], "/goal") {
+		if len(body) == 5 {
+			body = ""
+		} else if r, _ := utf8.DecodeRuneInString(body[5:]); unicode.IsSpace(r) {
+			body = strings.TrimSpace(body[5:])
+		}
+	}
+	return strings.Join(strings.Fields(body), " ")
 }

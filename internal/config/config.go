@@ -99,7 +99,7 @@ func cloneBarStyles(src map[string][]string) map[string][]string {
 
 func Default() *Config {
 	return &Config{
-		Modules:     []string{"context", "usage", "model", "tps", "dir", "git", "tools", "agents", "environment", "session"},
+		Modules:     []string{"context", "usage", "model", "tps", "dir", "git", "goal", "tools", "agents", "environment", "session"},
 		Separator:   " | ",
 		Newline:     []string{"tools", "agents", "environment"},
 		BarStyle:    "diamond",

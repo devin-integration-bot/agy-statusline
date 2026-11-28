@@ -54,6 +54,7 @@ func execute(r io.Reader, cfgPath string) string {
 	registry.Register(module.NewTPSModule())
 	registry.Register(module.NewDirModule())
 	registry.Register(module.NewGitModule())
+	registry.Register(module.NewGoalModule())
 	registry.Register(module.NewToolsModule())
 	registry.Register(module.NewAgentsModule())
 	registry.Register(module.NewProjectModule())

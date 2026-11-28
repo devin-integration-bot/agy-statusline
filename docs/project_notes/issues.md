@@ -1,5 +1,10 @@
 # Work Log
 
+### 2026-11-28 - Add active /goal statusline module after git branch
+- **Status**: Verified
+- **Description**: Added standalone `goal` module placed after `git`, extracting `/goal` activation from `<ADDITIONAL_METADATA>` and completion/cancellation markers outside CommonMark code spans/fences, rendering `Goal <elapsed> >> <text>` while active with per-session cache across tail-seeked long sessions.
+- **Verification**: `go test -race -cover ./...`, `golangci-lint run`, `CGO_ENABLED=0 go install`, adversarial review fixes (all P1/P2/P3), and live `/goal` transcript smoke test all passed.
+
 ### 2026-11-26 - Add current directory statusline module before git branch
 - **Status**: Verified
 - **Description**: Added standalone `dir` module placed before `git`, showing main git repository root (including subdirs and linked worktrees), basename for nested non-git directories, and `~/name` (or `~`) when at most one level under home.

@@ -746,11 +746,15 @@ func defaultTPSStateDir() string {
 }
 
 func pruneStaleTPSState(dir string, now time.Time) {
+	pruneStaleJSONFiles(dir, now, stateFileMaxAge)
+}
+
+func pruneStaleJSONFiles(dir string, now time.Time, maxAge time.Duration) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
-	cutoff := now.Add(-stateFileMaxAge)
+	cutoff := now.Add(-maxAge)
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
@@ -779,16 +783,20 @@ func loadTPSState(path string) (tpsState, bool) {
 }
 
 func saveTPSState(path string, st tpsState) error {
+	return writeJSONAtomic(path, ".tps-*.tmp", st)
+}
+
+func writeJSONAtomic(path, tmpPattern string, v any) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	data, err := json.Marshal(st)
+	data, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
 
-	tmp, err := os.CreateTemp(dir, ".tps-*.tmp")
+	tmp, err := os.CreateTemp(dir, tmpPattern)
 	if err != nil {
 		return err
 	}

@@ -272,3 +272,132 @@ func TestParse_TPSOutOfOrderGenericAndMinDuration(t *testing.T) {
 		t.Errorf("totals = (%d tok, %v), want (700, 7s)", data.TotalOutputTokens, data.TotalDuration)
 	}
 }
+
+func TestParse_GoalLifecycle(t *testing.T) {
+	t.Run("active_ignores_code_quoted_markers", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "transcript.jsonl")
+		lines := []string{
+			`{"step_index":0,"type":"USER_INPUT","status":"DONE","created_at":"2026-11-28T13:00:00Z","content":"<USER_REQUEST>\n/goal　跑三轮 /review 修复全部问题\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\n/goal is a [Slash Command]:\n</ADDITIONAL_METADATA>"}`,
+			// Inline single/double backticks, 4-backtick nested fence, and tilde fence must NOT end the active goal.
+			"{\"step_index\":1,\"type\":\"PLANNER_RESPONSE\",\"status\":\"DONE\",\"created_at\":\"2026-11-28T13:05:00Z\",\"content\":\"Quoted `<!-- GOAL_COMPLETE -->` and ``<!-- GOAL_CANCELLED -->``.\\n````markdown\\n```\\n<!-- GOAL_COMPLETE -->\\n```\\n````\\n~~~\\n<!-- GOAL_CANCELLED -->\\n~~~\"}",
+		}
+		if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		data, err := Parse(p, 0)
+		if err != nil {
+			t.Fatalf("Parse error: %v", err)
+		}
+		if data.Goal.Status != GoalActive || !data.FullScan {
+			t.Fatalf("Goal = %+v FullScan=%v, want active/true", data.Goal, data.FullScan)
+		}
+		if data.Goal.Text != "跑三轮 /review 修复全部问题" {
+			t.Errorf("Goal.Text = %q", data.Goal.Text)
+		}
+		if data.Goal.StartTime.IsZero() {
+			t.Errorf("expected non-zero Goal.StartTime")
+		}
+	})
+
+	t.Run("inline_triple_backtick_and_unmatched_backtick_do_not_hide_marker", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "transcript.jsonl")
+		lines := []string{
+			`{"step_index":0,"type":"USER_INPUT","status":"DONE","created_at":"2026-11-28T13:00:00Z","content":"<USER_REQUEST>\n/goal\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\n/goal is a [Slash Command]:\n</ADDITIONAL_METADATA>"}`,
+			"{\"step_index\":1,\"type\":\"PLANNER_RESPONSE\",\"status\":\"DONE\",\"created_at\":\"2026-11-28T13:10:00Z\",\"content\":\"```go test ./...``` passed.\\nNote: stray ` backtick before <!-- GOAL_COMPLETE -->\"}",
+		}
+		if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		data, err := Parse(p, 0)
+		if err != nil {
+			t.Fatalf("Parse error: %v", err)
+		}
+		if data.Goal.Status != GoalCompleted {
+			t.Fatalf("Goal.Status = %q, want %q", data.Goal.Status, GoalCompleted)
+		}
+		if data.Goal.Text != "" {
+			t.Errorf("bare /goal Text = %q, want empty", data.Goal.Text)
+		}
+	})
+
+	t.Run("user_pasting_goal_metadata_text_does_not_activate_goal", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "transcript.jsonl")
+		lines := []string{
+			`{"step_index":0,"type":"USER_INPUT","status":"DONE","created_at":"2026-11-28T13:00:00Z","content":"<USER_REQUEST>\nReview this line: /goal is a [Slash Command]:\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-28\n</ADDITIONAL_METADATA>"}`,
+		}
+		if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		data, err := Parse(p, 0)
+		if err != nil {
+			t.Fatalf("Parse error: %v", err)
+		}
+		if data.Goal.Status != GoalNone {
+			t.Fatalf("pasted marker inside USER_REQUEST activated goal: %+v", data.Goal)
+		}
+	})
+
+	t.Run("completed_and_cancelled_and_restarted", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "transcript.jsonl")
+		lines := []string{
+			// Goal 1 starts and finishes with HTML-escaped JSON marker.
+			`{"step_index":0,"type":"USER_INPUT","status":"DONE","created_at":"2026-11-28T13:00:00Z","content":"<USER_REQUEST>\n/goal first task\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\n/goal is a [Slash Command]:\n</ADDITIONAL_METADATA>"}`,
+			`{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-28T13:10:00Z","content":"Done!\n\n\u003c!-- GOAL_COMPLETE --\u003e"}`,
+			// Goal 2 starts and is cancelled.
+			`{"step_index":2,"type":"USER_INPUT","status":"DONE","created_at":"2026-11-28T13:20:00Z","content":"<USER_REQUEST>\n/goal second task\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\n/goal is a [Slash Command]:\n</ADDITIONAL_METADATA>"}`,
+			`{"step_index":3,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-28T13:25:00Z","content":"Stopped as requested.\n\n<!-- GOAL_CANCELLED -->"}`,
+		}
+		if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		data, err := Parse(p, 0)
+		if err != nil {
+			t.Fatalf("Parse error: %v", err)
+		}
+		if data.Goal.Status != GoalCancelled {
+			t.Fatalf("Goal.Status = %q, want %q", data.Goal.Status, GoalCancelled)
+		}
+	})
+
+	t.Run("non_goal_chat_ignores_markers_and_seeked_tail_respects_state", func(t *testing.T) {
+		p := filepath.Join(t.TempDir(), "transcript.jsonl")
+		pad := strings.Repeat("x", 1024)
+		lines := []string{
+			`{"step_index":0,"type":"USER_INPUT","status":"DONE","created_at":"2026-11-28T13:00:00Z","content":"` + pad + `"}`,
+			`{"step_index":1,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-28T13:10:00Z","content":"Done.\n\n<!-- GOAL_COMPLETE -->"}`,
+			// Subsequent stray marker after already-completed goal in seeked tail must not overwrite status.
+			`{"step_index":2,"type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-28T13:15:00Z","content":"<!-- GOAL_CANCELLED -->"}`,
+		}
+		if err := os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		// Full scan (no /goal started): GoalNone, FullScan=true.
+		full, err := Parse(p, 0)
+		if err != nil {
+			t.Fatalf("Parse full error: %v", err)
+		}
+		if full.Goal.Status != GoalNone || !full.FullScan {
+			t.Errorf("full scan Goal = %+v FullScan=%v, want GoalNone/true", full.Goal, full.FullScan)
+		}
+
+		// Tail-seeked scan records GoalCompleted on first marker and ignores subsequent stray marker.
+		tailed, err := Parse(p, 500)
+		if err != nil {
+			t.Fatalf("Parse tailed error: %v", err)
+		}
+		if tailed.Goal.Status != GoalCompleted || tailed.FullScan {
+			t.Errorf("tailed scan Goal = %+v FullScan=%v, want GoalCompleted/false", tailed.Goal, tailed.FullScan)
+		}
+
+		// Missing file returns FullScan=false so cached active goals are preserved on transient I/O errors.
+		missing, _ := Parse(filepath.Join(t.TempDir(), "missing.jsonl"), 0)
+		if missing.FullScan {
+			t.Errorf("missing file should report FullScan=false")
+		}
+	})
+}

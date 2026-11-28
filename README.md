@@ -48,7 +48,7 @@ A default config is auto-generated on first run at `~/.gemini/antigravity-cli/pl
 
 ```json
 {
-  "modules": ["context", "usage", "model", "tps", "dir", "git", "tools", "agents", "environment", "session"],
+  "modules": ["context", "usage", "model", "tps", "dir", "git", "goal", "tools", "agents", "environment", "session"],
   "separator": " | "
 }
 ```
@@ -58,9 +58,9 @@ A default config is auto-generated on first run at `~/.gemini/antigravity-cli/pl
 ```jsonc
 {
   // Enabled modules, rendered left-to-right in this order.
-  // Available: context, usage, model, tps, dir, git, tools, agents, project,
+  // Available: context, usage, model, tps, dir, git, goal, tools, agents, project,
   // environment, session, state, sandbox, artifacts, subagents, tasks
-  "modules": ["context", "usage", "model", "tps", "dir", "git", "tools", "agents", "environment", "session"],
+  "modules": ["context", "usage", "model", "tps", "dir", "git", "goal", "tools", "agents", "environment", "session"],
 
   // Separator between modules on the same line.
   "separator": " | ",
@@ -158,6 +158,12 @@ A default config is auto-generated on first run at `~/.gemini/antigravity-cli/pl
   // Note: git rev-list is only executed when {ahead} or {behind} is used in format.
   "git": {
     "format": "{branch}{dirty}"
+  },
+
+  // Active /goal status, elapsed time, and summary (hidden when completed, cancelled, or inactive).
+  // Variables: {goal} {status} {elapsed} {text}
+  "goal": {
+    "format": "{goal}"
   },
 
   // Tool call tracking. Variables: {running} {completed} {errors} {summary}
